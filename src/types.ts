@@ -18,6 +18,9 @@ export interface IdentifiedCar {
   category: string;
   engineType: string;
   power: string;
+  horsepower: string;
+  torque: string;
+  modelYear: string;
   zeroToSixty: string;
   estimatedNewPrice: string;
   estimatedUsedPrice: string;

@@ -109,6 +109,9 @@ If the image does not seem to contain or represent an automobile, please set "is
             category: { type: Type.STRING, description: "Car body style / category, e.g., Coupe, Sedan, Hatchback, Convertible, SUV, Supercar, EV." },
             engineType: { type: Type.STRING, description: "Estimated powertrain configuration, e.g., 'Turbocharged 2.0L Inline-4' or 'Dual Motor AWD EV'." },
             power: { type: Type.STRING, description: "Estimated horsepower or electrical output, e.g., '315 hp'." },
+            horsepower: { type: Type.STRING, description: "The specific horsepower rating, e.g., '315 hp' or '450 hp'." },
+            torque: { type: Type.STRING, description: "The specific engine torque rating in lb-ft or Nm, e.g., '310 lb-ft' or '400 Nm'." },
+            modelYear: { type: Type.STRING, description: "The most likely single model year of the specific car shown in the photo, e.g., '2023'." },
             zeroToSixty: { type: Type.STRING, description: "Estimated 0-60 mph (or 0-100 km/h) acceleration time." },
             estimatedNewPrice: { type: Type.STRING, description: "Original MSRP price range when sold brand new." },
             estimatedUsedPrice: { type: Type.STRING, description: "Current estimated resale or used value range on the market." },
@@ -134,7 +137,7 @@ If the image does not seem to contain or represent an automobile, please set "is
           },
           required: [
             "isCar", "make", "model", "generation", "yearRange", "confidence", "color", 
-            "category", "engineType", "power", "zeroToSixty", "estimatedNewPrice", 
+            "category", "engineType", "power", "horsepower", "torque", "modelYear", "zeroToSixty", "estimatedNewPrice", 
             "estimatedUsedPrice", "trivia", "tips", "specs"
           ]
         }

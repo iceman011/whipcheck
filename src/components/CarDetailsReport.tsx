@@ -78,10 +78,10 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
             {car.category}
           </span>
           <h1 className="text-xl font-bold font-display text-white tracking-tight uppercase leading-tight line-clamp-1">
-            {car.make} {car.model}
+            {car.modelYear ? `${car.modelYear} ` : ""}{car.make} {car.model}
           </h1>
           <p className="text-xs text-slate-350 font-mono mt-0.5">
-            {car.generation !== "N/A" && `${car.generation} • `}Estimated: {car.yearRange}
+            {car.generation !== "N/A" && `${car.generation} • `}Production Span: {car.yearRange}
           </p>
         </div>
       </div>
@@ -141,6 +141,18 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
           <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
             <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Fuel / range</span>
             <span className="text-[10px] font-semibold text-slate-300 block mt-1 line-clamp-1">{car.specs.fuelEconomy}</span>
+          </div>
+          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
+            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Horsepower</span>
+            <span className="text-[10px] font-semibold text-amber-450 block mt-1 line-clamp-1">{car.horsepower || car.power}</span>
+          </div>
+          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
+            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Torque</span>
+            <span className="text-[10px] font-semibold text-orange-400 block mt-1 line-clamp-1">{car.torque}</span>
+          </div>
+          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
+            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Model Year</span>
+            <span className="text-[10px] font-semibold text-blue-400 block mt-1 line-clamp-1">{car.modelYear}</span>
           </div>
         </div>
 

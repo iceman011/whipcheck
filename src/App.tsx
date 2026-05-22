@@ -33,6 +33,7 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loadingStatusText, setLoadingStatusText] = useState<string>("Initializing...");
   const [urlInput, setUrlInput] = useState<string>("");
+  const [isInIframe, setIsInIframe] = useState<boolean>(false);
 
   // Camera references
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -45,6 +46,13 @@ export default function App() {
 
   // Initialize and load saved garage items
   useEffect(() => {
+    // Detect if inside an iframe
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch (e) {
+      setIsInIframe(true);
+    }
+
     try {
       const saved = localStorage.getItem("car_spotter_garage_v2");
       if (saved) {
@@ -249,7 +257,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0c] text-slate-350 flex flex-col font-sans select-none antialiased md:py-6 md:px-4">
+    <div className="min-h-screen bg-[#0a0a0c] text-slate-350 flex flex-col font-sans antialiased md:py-6 md:px-4">
       
       {/* Primary Container - Sized like a sleek modern mobile app on desktop, fully fluid on mobile */}
       <div className="w-full max-w-md mx-auto bg-[#0f0f12] border-0 md:border md:border-slate-800 md:rounded-3xl shadow-2xl shadow-blue-950/20 flex flex-col overflow-hidden min-h-screen md:min-h-[840px] relative">
@@ -294,53 +302,77 @@ export default function App() {
           {activeTab === 'scan' && (
             <div className="space-y-5">
               
+              {/* Standalone open tab notice if inside iframe sandbox */}
+              {isInIframe && (
+                <div className="p-3 bg-blue-950/40 border border-blue-500/20 rounded-xl space-y-2 text-xs flex flex-col gap-2 shadow-lg">
+                  <div className="space-y-0.5">
+                    <p className="font-bold text-blue-300 flex items-center gap-1">
+                      <Layers className="h-3.5 w-3.5 text-blue-400 animate-pulse" />
+                      Safari/Chrome Iframe Constraint
+                    </p>
+                    <p className="text-[11px] text-slate-300 leading-normal">
+                      Mobile browsers block Cameras & direct paste controls inside nested site previews. For unrestricted camera/upload support, run standalone.
+                    </p>
+                  </div>
+                  <a
+                    href={window.location.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-3 py-2 rounded-lg shrink-0 transition"
+                  >
+                    <span>Open Standalone Tab</span>
+                    <ChevronRight className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
+
               {/* Scan Workspace Frame Selector */}
               {scanStep === 'idle' && (
                 <div className="space-y-4">
                   {/* Futuristic Interactive Viewport Hero */}
-                  <div className="p-6 rounded-2xl border border-slate-800 bg-[#0a0a0c] text-center relative overflow-hidden group">
-                    <div className="absolute inset-0 opacity-10" style={{ backgroundImage: "radial-gradient(#3b82f6 1px, transparent 1px)", backgroundSize: "16px 16px" }}></div>
+                  <div className="p-6 rounded-2xl border border-slate-800 bg-[#07080a] text-center relative overflow-hidden group">
+                    <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: "radial-gradient(#3b82f6 1px, transparent 1px)", backgroundSize: "16px 16px" }}></div>
                     
                     {/* Viewport Brackets decoration */}
-                    <div className="absolute top-3 left-3 w-4 h-4 border-t border-l border-blue-500/60"></div>
-                    <div className="absolute top-3 right-3 w-4 h-4 border-t border-r border-blue-500/60"></div>
-                    <div className="absolute bottom-3 left-3 w-4 h-4 border-b border-l border-blue-500/60"></div>
-                    <div className="absolute bottom-3 right-3 w-4 h-4 border-b border-r border-blue-500/60"></div>
+                    <div className="absolute top-3 left-3 w-4 h-4 border-t border-l border-blue-500/60 pointer-events-none"></div>
+                    <div className="absolute top-3 right-3 w-4 h-4 border-t border-r border-blue-500/60 pointer-events-none"></div>
+                    <div className="absolute bottom-3 left-3 w-4 h-4 border-b border-l border-blue-500/60 pointer-events-none"></div>
+                    <div className="absolute bottom-3 right-3 w-4 h-4 border-b border-r border-blue-500/60 pointer-events-none"></div>
 
                     <div className="my-3 flex justify-center">
                       <div className="p-3.5 bg-blue-600/10 text-blue-400 rounded-2xl border border-blue-500/30 group-hover:scale-110 transition-transform duration-300">
-                        <CameraIcon className="w-8 h-8" />
+                        <CameraIcon className="w-8 h-8 pointer-events-none" />
                       </div>
                     </div>
                     
                     <h2 className="text-sm font-bold text-slate-100 font-display uppercase tracking-wide">Acquire Target Vehicle</h2>
-                    <p className="text-xs text-slate-400 mt-2 max-w-xs mx-auto leading-relaxed">
+                    <p className="text-xs text-slate-450 mt-2 max-w-xs mx-auto leading-relaxed">
                       Initialize the mobile camera alignment view or select a stored file to automatically extract model configurations.
                     </p>
 
                     <div className="grid grid-cols-2 gap-3 mt-5">
                       <button
                         onClick={startCamera}
-                        className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-3 px-2 rounded-xl transition cursor-pointer"
+                        className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-3.5 px-2 rounded-xl transition duration-200 cursor-pointer shadow-lg shadow-blue-900/10 active:scale-98"
                       >
-                        <CameraIcon className="h-4 w-4" />
+                        <CameraIcon className="h-4 w-4 text-white" />
                         <span>Live Camera</span>
                       </button>
 
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center justify-center gap-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-200 font-bold text-xs py-3 px-2 rounded-xl transition cursor-pointer"
+                      <label
+                        htmlFor="car-file-upload"
+                        className="flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white font-bold text-xs py-3.5 px-2 rounded-xl transition duration-200 cursor-pointer active:scale-98 shadow-md"
                       >
-                        <Upload className="h-4 w-4" />
+                        <Upload className="h-4 w-4 text-emerald-400" />
                         <span>Upload File</span>
-                      </button>
+                      </label>
                     </div>
 
                     {/* Pasted Image URL bar */}
-                    <div className="flex items-center gap-2 my-4">
-                      <div className="h-[1.5px] bg-slate-800/80 flex-1"></div>
-                      <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase">OR PASTE DIRECT URL</span>
-                      <div className="h-[1.5px] bg-slate-800/80 flex-1"></div>
+                    <div className="flex items-center gap-2 my-5">
+                      <div className="h-[1px] bg-slate-800 flex-1"></div>
+                      <span className="text-[9px] font-mono tracking-widest text-slate-400 uppercase font-semibold">OR ENTER DIRECT URL</span>
+                      <div className="h-[1px] bg-slate-800 flex-1"></div>
                     </div>
 
                     <form 
@@ -356,21 +388,43 @@ export default function App() {
                         type="url"
                         value={urlInput}
                         onChange={(e) => setUrlInput(e.target.value)}
-                        placeholder="https://images.unsplash.com/your-car-image.jpg"
-                        className="flex-1 bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-600 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-blue-500 transition font-mono"
+                        placeholder="Type or paste image link..."
+                        className="flex-1 bg-slate-900 border border-slate-600 text-slate-50 placeholder-slate-400 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition font-mono"
                         required
                       />
                       <button
                         type="submit"
                         disabled={!urlInput.trim()}
-                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-900 disabled:text-slate-600 border border-transparent disabled:border-slate-800 text-white font-bold text-xs px-3 py-2 rounded-xl transition cursor-pointer shrink-0 uppercase tracking-wider font-mono"
+                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-850 disabled:text-slate-500 border border-transparent disabled:border-slate-800 text-white font-bold text-xs px-4 py-2.5 rounded-xl transition cursor-pointer shrink-0 uppercase tracking-widest font-mono shadow-md disabled:cursor-not-allowed"
                       >
                         SCAN
                       </button>
                     </form>
 
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 mt-2.5 px-1">
+                      <span className="text-[9px] text-slate-500 font-mono">Tap target to auto-scan instantly:</span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectSample("https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&q=80&w=800")}
+                          className="text-[9px] text-blue-400 hover:text-blue-300 underline font-mono cursor-pointer"
+                        >
+                          Porsche 911
+                        </button>
+                        <span className="text-slate-700 text-[9px]">•</span>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectSample("https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&q=80&w=800")}
+                          className="text-[9px] text-blue-400 hover:text-blue-300 underline font-mono cursor-pointer"
+                        >
+                          Corvette
+                        </button>
+                      </div>
+                    </div>
+
                     <input
                       type="file"
+                      id="car-file-upload"
                       ref={fileInputRef}
                       onChange={handleFileChange}
                       accept="image/*"
@@ -449,12 +503,12 @@ export default function App() {
                       <div className="w-10 h-10 rounded-full bg-blue-500"></div>
                     </button>
 
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
+                    <label
+                      htmlFor="car-file-upload"
                       className="px-4 py-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-350 text-xs font-semibold rounded-xl flex items-center gap-1 transition cursor-pointer"
                     >
                       <Upload className="h-4 w-4" /> Gallery
-                    </button>
+                    </label>
                   </div>
                 </div>
               )}
