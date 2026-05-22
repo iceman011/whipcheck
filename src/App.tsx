@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Camera as CameraIcon, Upload, Sparkles, History, Compass, Database, 
   Trash2, ShieldAlert, CheckCircle2, ChevronRight, RotateCcw, 
-  MapPin, Loader2, Gauge, Settings, Cpu, HelpCircle, RefreshCw, Layers, ShieldCheck
+  MapPin, Loader2, Gauge, Settings, Cpu, HelpCircle, RefreshCw, Layers, ShieldCheck,
+  Search, ArrowUpDown, SlidersHorizontal
 } from "lucide-react";
 import { IdentifiedCar, ScanStepType } from "./types";
 import StatusIndicator from "./components/StatusIndicator";
@@ -142,6 +143,11 @@ export default function App() {
   // Scans history & collection garage
   const [garage, setGarage] = useState<IdentifiedCar[]>([]);
   const [selectedGarageCar, setSelectedGarageCar] = useState<IdentifiedCar | null>(null);
+
+  // Garage sorting, grouping, and search states
+  const [garageSearch, setGarageSearch] = useState<string>("");
+  const [garageSortBy, setGarageSortBy] = useState<string>("newest"); // "newest", "brand", "year", "confidence"
+  const [garageGroupBy, setGarageGroupBy] = useState<string>("none"); // "none", "brand", "category", "color"
 
   // Scan workflow state
   const [scanStep, setScanStep] = useState<ScanStepType>('idle');
@@ -372,6 +378,92 @@ export default function App() {
     setUrlInput("");
     stopCamera();
   };
+
+  // Filter, sort and group the garage items
+  const filteredGarage = garage.filter((car) => {
+    if (!garageSearch.trim()) return true;
+    const query = garageSearch.toLowerCase();
+    const makeVal = car.make || "";
+    const modelVal = car.model || "";
+    const catVal = car.category || "";
+    const colorVal = car.color || "";
+    const transVal = car.specs?.transmission || "";
+    const dtVal = car.specs?.driveType || "";
+    const extYearVal = car.modelYear || "";
+    return (
+      makeVal.toLowerCase().includes(query) ||
+      modelVal.toLowerCase().includes(query) ||
+      catVal.toLowerCase().includes(query) ||
+      colorVal.toLowerCase().includes(query) ||
+      transVal.toLowerCase().includes(query) ||
+      dtVal.toLowerCase().includes(query) ||
+      extYearVal.toLowerCase().includes(query)
+    );
+  });
+
+  const sortedGarage = [...filteredGarage].sort((a, b) => {
+    if (garageSortBy === "brand") {
+      const aName = `${a.make || ""} ${a.model || ""}`.toLowerCase();
+      const bName = `${b.make || ""} ${b.model || ""}`.toLowerCase();
+      return aName.localeCompare(bName);
+    } else if (garageSortBy === "year") {
+      const aYr = parseInt(a.modelYear) || 0;
+      const bYr = parseInt(b.modelYear) || 0;
+      return bYr - aYr; // Newest year first
+    } else if (garageSortBy === "confidence") {
+      const aConf = a.confidence || 0;
+      const bConf = b.confidence || 0;
+      return bConf - aConf; // Highest confidence first
+    } else {
+      // "newest" by timestamp
+      const aTime = new Date(a.timestamp).getTime() || 0;
+      const bTime = new Date(b.timestamp).getTime() || 0;
+      return bTime - aTime;
+    }
+  });
+
+  // Create groups if necessary
+  interface GroupedCars {
+    groupTitle: string;
+    cars: IdentifiedCar[];
+  }
+
+  let groupedGarage: GroupedCars[] = [];
+
+  if (garageGroupBy === "none") {
+    groupedGarage = [{ groupTitle: "", cars: sortedGarage }];
+  } else {
+    const groupsMap: Record<string, IdentifiedCar[]> = {};
+    sortedGarage.forEach((car) => {
+      let key = "Other";
+      if (garageGroupBy === "brand") {
+        key = car.make || "Unknown Brand";
+      } else if (garageGroupBy === "category") {
+        key = car.category || "Uncategorized";
+      } else if (garageGroupBy === "color") {
+        key = car.color || "Other Color";
+      }
+      
+      key = key.trim();
+      if (key) {
+        key = key.charAt(0).toUpperCase() + key.slice(1);
+      } else {
+        key = "Unknown";
+      }
+      
+      if (!groupsMap[key]) {
+        groupsMap[key] = [];
+      }
+      groupsMap[key].push(car);
+    });
+
+    groupedGarage = Object.keys(groupsMap)
+      .sort((a, b) => a.localeCompare(b))
+      .map((key) => ({
+        groupTitle: key,
+        cars: groupsMap[key],
+      }));
+  }
 
   return (
     <div className={`min-h-screen ${activeTheme.primaryBg} text-slate-200 flex flex-col font-sans antialiased transition-colors duration-300 md:py-6 md:px-4`}>
@@ -754,17 +846,98 @@ export default function App() {
                   <h2 className="text-sm font-black tracking-wider text-slate-100 font-display uppercase">Saved Spotter Garage</h2>
                   <p className="text-[10px] text-slate-500 uppercase font-mono">My personal collection database</p>
                 </div>
-                <span className="bg-blue-500/10 text-blue-400 border border-blue-500/25 text-[10px] font-mono px-2 py-0.5 rounded-full">
+                <span className={`bg-slate-900 border border-slate-800 text-[10px] font-mono px-2 py-0.5 rounded-full ${activeTheme.primaryText}`}>
                   {garage.length} Vehicles
                 </span>
               </div>
+
+              {/* Search and Database Controls */}
+              {!selectedGarageCar && garage.length > 0 && (
+                <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-850 space-y-2.5">
+                  {/* Search input with clear button */}
+                  <div className="relative">
+                    <Search className={`absolute left-3 top-2.5 h-3.5 w-3.5 ${activeTheme.primaryText}`} />
+                    <input
+                      type="text"
+                      placeholder="Search brand, model, specs, color..."
+                      value={garageSearch}
+                      onChange={(e) => setGarageSearch(e.target.value)}
+                      className="w-full bg-slate-950/80 border border-slate-800 text-slate-100 placeholder-slate-500 rounded-lg pl-9 pr-8 py-2 text-xs focus:ring-1 focus:ring-slate-500/30 focus:border-slate-500 font-medium font-sans"
+                    />
+                    {garageSearch && (
+                      <button
+                        onClick={() => setGarageSearch("")}
+                        className="absolute right-3 top-2 text-slate-400 hover:text-slate-200 text-xs font-mono font-bold cursor-pointer"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Selectors row */}
+                  <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                    {/* Sort Selector */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-slate-500 uppercase tracking-wider block font-semibold">Sort order</label>
+                      <div className="relative">
+                        <select
+                          value={garageSortBy}
+                          onChange={(e) => setGarageSortBy(e.target.value)}
+                          className="w-full bg-slate-950/90 border border-slate-800 text-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-slate-750 cursor-pointer text-xs"
+                        >
+                          <option value="newest">Newest Added</option>
+                          <option value="brand">Brand (A-Z)</option>
+                          <option value="year">Model Year</option>
+                          <option value="confidence">Confidence Score</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Group By Selector */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-slate-500 uppercase tracking-wider block font-semibold">Grouping</label>
+                      <div className="relative">
+                        <select
+                          value={garageGroupBy}
+                          onChange={(e) => setGarageGroupBy(e.target.value)}
+                          className="w-full bg-slate-950/90 border border-slate-800 text-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-slate-750 cursor-pointer text-xs"
+                        >
+                          <option value="none">Flat List (None)</option>
+                          <option value="brand">By Brand/Make</option>
+                          <option value="category">By Category</option>
+                          <option value="color">By Paint Color</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Filter state readout */}
+                  {(garageSearch || garageSortBy !== "newest" || garageGroupBy !== "none") && (
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1.5 border-t border-slate-850/40">
+                      <span>
+                        Found <strong className={`${activeTheme.primaryText}`}>{sortedGarage.length}</strong> of {garage.length} vehicles
+                      </span>
+                      <button 
+                        onClick={() => {
+                          setGarageSearch("");
+                          setGarageSortBy("newest");
+                          setGarageGroupBy("none");
+                        }}
+                        className="text-[9px] text-red-400 hover:underline hover:text-red-300 uppercase tracking-wider font-bold cursor-pointer"
+                      >
+                        Reset filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Select Garage Car or list of saved items */}
               {selectedGarageCar ? (
                 <div className="space-y-3">
                   <button
                     onClick={() => setSelectedGarageCar(null)}
-                    className="text-xs text-blue-400 hover:text-blue-300 font-bold font-mono uppercase tracking-wider flex items-center gap-1 mb-2 cursor-pointer"
+                    className={`text-xs ${activeTheme.primaryText} hover:underline font-bold font-mono uppercase tracking-wider flex items-center gap-1 mb-2 cursor-pointer`}
                   >
                     ← Back to Database
                   </button>
@@ -787,59 +960,97 @@ export default function App() {
                   </p>
                   <button
                     onClick={() => setActiveTab('scan')}
-                    className="inline-block bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition cursor-pointer"
+                    className={`inline-block ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition cursor-pointer`}
                   >
                     Start Spotting
                   </button>
                 </div>
+              ) : sortedGarage.length === 0 ? (
+                /* No Results Found for Search query state */
+                <div className="p-8 rounded-2xl border border-slate-850 bg-slate-900/10 text-center space-y-3">
+                  <div className="inline-block p-3 bg-slate-900 text-slate-500 rounded-full border border-slate-800">
+                    <Search className="h-6 w-6" />
+                  </div>
+                  <h3 className="text-xs font-bold text-slate-300 uppercase font-display">No Matches Found</h3>
+                  <p className="text-[11px] text-slate-500 leading-relaxed max-w-xs mx-auto">
+                    No vehicles match your search query: "{garageSearch}". Check your spelling or reset filters.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setGarageSearch("");
+                      setGarageSortBy("newest");
+                      setGarageGroupBy("none");
+                    }}
+                    className={`inline-block ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-xs px-4 py-2 rounded-xl transition cursor-pointer`}
+                  >
+                    Reset All Filters
+                  </button>
+                </div>
               ) : (
-                /* Scans database list style */
-                <div className="space-y-3">
-                  {garage.map((car) => (
-                    <div
-                      key={car.id}
-                      onClick={() => setSelectedGarageCar(car)}
-                      className="p-3 bg-slate-900/50 hover:bg-slate-900 rounded-xl border border-slate-850 hover:border-slate-800 transition flex gap-3 cursor-pointer group"
-                    >
-                      <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
-                        <img
-                          src={car.image}
-                          alt={car.model}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-
-                      <div className="flex-1 min-w-0 flex flex-col justify-between">
-                        <div>
-                          <div className="flex items-center justify-between gap-1.5">
-                            <span className="text-[9px] uppercase font-mono text-emerald-400 tracking-wider">
-                              {car.category}
-                            </span>
-                            <span className="text-[8px] font-mono text-slate-500">
-                              {car.timestamp}
-                            </span>
-                          </div>
-                          <h4 className="text-xs font-bold font-display text-slate-200 uppercase truncate group-hover:text-blue-400 transition-colors">
-                            {car.make} {car.model}
-                          </h4>
-                          <p className="text-[10px] text-slate-400 truncate mt-0.5">
-                            Specs: {car.specs.transmission} • {car.specs.driveType}
-                          </p>
-                        </div>
-
-                        <div className="flex justify-between items-center mt-1">
-                          <span className="text-[10px] font-mono font-semibold text-teal-400">
-                            {car.estimatedUsedPrice || "Est. Resale N/A"}
+                /* Scans database list style with possible grouping */
+                <div className="space-y-5">
+                  {groupedGarage.map((group) => (
+                    <div key={group.groupTitle || "all"} className="space-y-2.5">
+                      {group.groupTitle && (
+                        <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/30 border-l-[3px] border-l-blue-500/60 rounded-r-lg" style={{ borderLeftColor: activeTheme.colorHex }}>
+                          <span className={`text-[10px] font-bold font-mono ${activeTheme.primaryText} tracking-wider uppercase block`}>
+                            {group.groupTitle}
                           </span>
-                          
-                          <button
-                            onClick={(e) => removeFromGarage(car.id, e)}
-                            className="text-slate-500 hover:text-red-400 transition cursor-pointer p-1"
-                            title="Remove from database"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
+                          <span className="text-[9px] font-mono text-slate-500">
+                            {group.cars.length} {group.cars.length === 1 ? 'vehicle' : 'vehicles'}
+                          </span>
                         </div>
+                      )}
+                      
+                      <div className="space-y-3">
+                        {group.cars.map((car) => (
+                          <div
+                            key={car.id}
+                            onClick={() => setSelectedGarageCar(car)}
+                            className="p-3 bg-slate-900/50 hover:bg-slate-900 rounded-xl border border-slate-850 hover:border-slate-800 transition flex gap-3 cursor-pointer group"
+                          >
+                            <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
+                              <img
+                                src={car.image}
+                                alt={car.model}
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
+
+                            <div className="flex-1 min-w-0 flex flex-col justify-between font-sans">
+                              <div>
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <span className="text-[9px] uppercase font-mono text-emerald-400 tracking-wider">
+                                    {car.category}
+                                  </span>
+                                  <span className="text-[8px] font-mono text-slate-500">
+                                    {car.timestamp}
+                                  </span>
+                                </div>
+                                <h4 className={`text-xs font-bold font-display text-slate-200 uppercase truncate group-hover:${activeTheme.primaryText} transition-colors`}>
+                                  {car.make} {car.model}
+                                </h4>
+                                <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                                  Specs: {car.specs?.transmission || "N/A"} • {car.specs?.driveType || "N/A"}
+                                </p>
+                              </div>
+
+                              <div className="flex justify-between items-center mt-1">
+                                <span className="text-[10px] font-mono font-semibold text-teal-400">
+                                  {car.estimatedUsedPrice || "Est. Resale N/A"}
+                                </span>
+                                
+                                <button
+                                  onClick={(e) => removeFromGarage(car.id, e)}
+                                  className="text-slate-500 hover:text-red-400 transition cursor-pointer p-1"
+                                  title="Remove from database"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ))}
