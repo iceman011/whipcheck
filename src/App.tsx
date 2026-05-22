@@ -32,6 +32,7 @@ export default function App() {
   const [identifiedCar, setIdentifiedCar] = useState<IdentifiedCar | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loadingStatusText, setLoadingStatusText] = useState<string>("Initializing...");
+  const [urlInput, setUrlInput] = useState<string>("");
 
   // Camera references
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -243,6 +244,7 @@ export default function App() {
     setIdentifiedCar(null);
     setErrorMsg(null);
     setScanStep('idle');
+    setUrlInput("");
     stopCamera();
   };
 
@@ -333,6 +335,39 @@ export default function App() {
                         <span>Upload File</span>
                       </button>
                     </div>
+
+                    {/* Pasted Image URL bar */}
+                    <div className="flex items-center gap-2 my-4">
+                      <div className="h-[1.5px] bg-slate-800/80 flex-1"></div>
+                      <span className="text-[9px] font-mono tracking-widest text-slate-500 uppercase">OR PASTE DIRECT URL</span>
+                      <div className="h-[1.5px] bg-slate-800/80 flex-1"></div>
+                    </div>
+
+                    <form 
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (urlInput.trim()) {
+                          handleSelectSample(urlInput.trim());
+                        }
+                      }}
+                      className="flex gap-2"
+                    >
+                      <input
+                        type="url"
+                        value={urlInput}
+                        onChange={(e) => setUrlInput(e.target.value)}
+                        placeholder="https://images.unsplash.com/your-car-image.jpg"
+                        className="flex-1 bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-600 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-blue-500 transition font-mono"
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={!urlInput.trim()}
+                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-900 disabled:text-slate-600 border border-transparent disabled:border-slate-800 text-white font-bold text-xs px-3 py-2 rounded-xl transition cursor-pointer shrink-0 uppercase tracking-wider font-mono"
+                      >
+                        SCAN
+                      </button>
+                    </form>
 
                     <input
                       type="file"
