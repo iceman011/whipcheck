@@ -1,0 +1,6 @@
+{
+  "name": "Car Make and Model Identifier",
+  "description": "A mobile web application that captures car photos to identify their make, model, year, and specifications using computer vision.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
