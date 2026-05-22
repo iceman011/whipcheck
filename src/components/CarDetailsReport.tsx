@@ -11,6 +11,20 @@ interface CarDetailsReportProps {
   isSaved?: boolean;
 }
 
+function getVisualColorHex(colorName: string): string {
+  const c = (colorName || "").toLowerCase();
+  if (c.includes("white")) return "#ffffff";
+  if (c.includes("black")) return "#111115";
+  if (c.includes("gray") || c.includes("grey") || c.includes("silver") || c.includes("slate") || c.includes("metallic")) return "#8e9bb0";
+  if (c.includes("blue") || c.includes("cyan")) return "#1d4ed8";
+  if (c.includes("red") || c.includes("burgundy") || c.includes("crimson")) return "#dc2626";
+  if (c.includes("yellow") || c.includes("gold")) return "#eab308";
+  if (c.includes("green")) return "#15803d";
+  if (c.includes("orange")) return "#ea580c";
+  if (c.includes("brown") || c.includes("bronze") || c.includes("beige")) return "#854d0e";
+  return "#3b82f6"; // comfortable blue fallback
+}
+
 export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = false }: CarDetailsReportProps) {
   // If the image is analyzed and determined not to be a car
   if (!car.isCar) {
@@ -80,7 +94,7 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
           <h1 className="text-xl font-bold font-display text-white tracking-tight uppercase leading-tight line-clamp-1">
             {car.modelYear ? `${car.modelYear} ` : ""}{car.make} {car.model}
           </h1>
-          <p className="text-xs text-slate-350 font-mono mt-0.5">
+          <p className="text-xs text-amber-300 font-mono mt-1 font-semibold drop-shadow-md">
             {car.generation !== "N/A" && `${car.generation} • `}Production Span: {car.yearRange}
           </p>
         </div>
@@ -89,78 +103,83 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
       {/* Main Stats Grid */}
       <div className="grid grid-cols-2 gap-3">
         {/* Powertrain */}
-        <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-850 space-y-1">
-          <div className="flex items-center gap-1.5 text-slate-400 text-[10px] font-mono uppercase">
-            <Settings2 className="h-3.5 w-3.5 text-slate-500" />
+        <div className="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+          <div className="flex items-center gap-1.5 text-blue-400 text-[10px] font-mono uppercase font-bold tracking-wider">
+            <Settings2 className="h-3.5 w-3.5 text-blue-400" />
             <span>Powertrain</span>
           </div>
-          <p className="text-xs font-semibold text-slate-200 line-clamp-2 leading-relaxed">{car.engineType}</p>
+          <p className="text-xs font-bold text-slate-100 line-clamp-2 leading-relaxed">{car.engineType}</p>
         </div>
 
         {/* Acceleration */}
-        <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-850 space-y-1">
-          <div className="flex items-center gap-1.5 text-slate-400 text-[10px] font-mono uppercase">
-            <Gauge className="h-3.5 w-3.5 text-slate-500" />
-            <span>0-60 MPH</span>
+        <div className="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+          <div className="flex items-center gap-1.5 text-purple-400 text-[10px] font-mono uppercase font-bold tracking-wider">
+            <Gauge className="h-3.5 w-3.5 text-purple-400" />
+            <span>0-100 KM/H</span>
           </div>
-          <p className="text-xs font-semibold text-slate-200">{car.zeroToSixty}</p>
+          <p className="text-xs font-bold text-slate-100">{car.zeroToSixty}</p>
         </div>
 
         {/* Brand New Value */}
-        <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-850 space-y-1">
-          <div className="flex items-center gap-1.5 text-slate-400 text-[10px] font-mono uppercase">
-            <DollarSign className="h-3.5 w-3.5 text-emerald-500" />
-            <span>New MSRP</span>
+        <div className="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+          <div className="flex items-center gap-1.5 text-emerald-400 text-[10px] font-mono uppercase font-bold tracking-wider">
+            <span className="w-3.5 h-3.5 flex items-center justify-center bg-emerald-500/15 text-emerald-400 rounded-full font-bold text-[9px]">E</span>
+            <span>Est. New (EGP)</span>
           </div>
-          <p className="text-xs font-semibold text-slate-200">{car.estimatedNewPrice}</p>
+          <p className="text-xs font-bold text-emerald-300">{car.estimatedNewPrice}</p>
         </div>
 
         {/* Market Value Used */}
-        <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-850 space-y-1">
-          <div className="flex items-center gap-1.5 text-slate-400 text-[10px] font-mono uppercase">
-            <DollarSign className="h-3.5 w-3.5 text-indigo-400" />
-            <span>Resale Range</span>
+        <div className="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800/80 space-y-1">
+          <div className="flex items-center gap-1.5 text-pink-400 text-[10px] font-mono uppercase font-bold tracking-wider">
+            <span className="w-3.5 h-3.5 flex items-center justify-center bg-pink-500/15 text-pink-400 rounded-full font-bold text-[9px]">E</span>
+            <span>Resale (EGP)</span>
           </div>
-          <p className="text-xs font-semibold text-teal-400 font-mono">{car.estimatedUsedPrice}</p>
+          <p className="text-xs font-bold text-pink-300 font-mono">{car.estimatedUsedPrice}</p>
         </div>
       </div>
 
       {/* Engineering Specs Block */}
       <div className="bg-slate-900/20 p-4 rounded-xl border border-slate-850 space-y-3">
-        <h3 className="text-[10px] font-mono tracking-widest text-slate-500 uppercase">Mechanical Specifications</h3>
+        <h3 className="text-[10px] font-mono tracking-widest text-amber-400 uppercase font-bold">Mechanical Specifications</h3>
         
         <div className="grid grid-cols-3 gap-2 text-center">
-          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
-            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Transmission</span>
-            <span className="text-[10px] font-semibold text-slate-300 block mt-1 line-clamp-1">{car.specs.transmission}</span>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 shadow-inner">
+            <span className="block text-[8px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">Transmission</span>
+            <span className="text-[10px] font-bold text-slate-100 block mt-1 line-clamp-1">{car.specs.transmission}</span>
           </div>
-          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
-            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Drivetrain</span>
-            <span className="text-[10px] font-semibold text-slate-300 block mt-1 uppercase font-mono">{car.specs.driveType}</span>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 shadow-inner">
+            <span className="block text-[8px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">Drivetrain</span>
+            <span className="text-[10px] font-bold text-slate-100 block mt-1 uppercase font-mono">{car.specs.driveType}</span>
           </div>
-          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
-            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Fuel / range</span>
-            <span className="text-[10px] font-semibold text-slate-300 block mt-1 line-clamp-1">{car.specs.fuelEconomy}</span>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 shadow-inner">
+            <span className="block text-[8px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">Fuel / Range</span>
+            <span className="text-[10px] font-bold text-emerald-400 block mt-1 line-clamp-1">{car.specs.fuelEconomy}</span>
           </div>
-          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
-            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Horsepower</span>
-            <span className="text-[10px] font-semibold text-amber-450 block mt-1 line-clamp-1">{car.horsepower || car.power}</span>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 shadow-inner">
+            <span className="block text-[8px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">Horsepower</span>
+            <span className="text-[10px] font-bold text-yellow-400 block mt-1 line-clamp-1">{car.horsepower || car.power}</span>
           </div>
-          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
-            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Torque</span>
-            <span className="text-[10px] font-semibold text-orange-400 block mt-1 line-clamp-1">{car.torque}</span>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 shadow-inner">
+            <span className="block text-[8px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">Torque</span>
+            <span className="text-[10px] font-bold text-orange-400 block mt-1 line-clamp-1">{car.torque}</span>
           </div>
-          <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-850/60">
-            <span className="block text-[8px] font-mono text-slate-500 uppercase tracking-wider">Model Year</span>
-            <span className="text-[10px] font-semibold text-blue-400 block mt-1 line-clamp-1">{car.modelYear}</span>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 shadow-inner">
+            <span className="block text-[8px] font-mono text-zinc-400 uppercase tracking-wider font-semibold">Model Year</span>
+            <span className="text-[10px] font-bold text-blue-400 block mt-1 line-clamp-1">{car.modelYear}</span>
           </div>
         </div>
 
-        <div className="flex items-center justify-between pt-1.5 border-t border-slate-850/40 text-[10px]">
-          <span className="text-slate-400 font-mono flex items-center gap-1">
-            <Palette className="h-3 w-3 text-slate-500" /> Detected Paint Color:
+        <div className="flex items-center justify-between pt-2.5 border-t border-slate-800 text-xs">
+          <span className="text-slate-200 font-medium flex items-center gap-1.5 font-mono">
+            <Palette className="h-4 w-4 text-emerald-400" /> Paint Color:
           </span>
-          <span className="text-slate-250 font-bold capitalize">{car.color}</span>
+          <div className="flex items-center gap-2">
+            <span className="px-3.5 py-1.5 bg-slate-900 text-slate-50 border border-slate-700 font-bold text-xs rounded-xl shadow-lg capitalize flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full border border-white/20 shadow-inner" style={{ backgroundColor: getVisualColorHex(car.color) }}></span>
+              {car.color}
+            </span>
+          </div>
         </div>
       </div>
 

@@ -85,6 +85,12 @@ app.post("/api/identify-car", async (req, res) => {
     const textPart = {
       text: `Analyze this image of a car or vehicle. Correctly identify its make, model, generation, year range, and specific visually identifiable details or configurations. Be highly accurate and precise based on visual characteristics (lights, grilles, wheels, badges, rear paneling, etc.).
 
+IMPORTANT UNIT REQUIREMENT:
+1. All price estimates (estimatedNewPrice, estimatedUsedPrice) MUST be expressed in Egyptian Pounds (EGP) on the Egyptian market, e.g. "EGP 1,200,000" or "EGP 3.5 Million".
+2. All speed, range, and fuel numbers MUST use metric system:
+   - "zeroToSixty" MUST be 0-100 km/h acceleration time, e.g. "4.5 seconds".
+   - "specs.fuelEconomy" MUST be L/100 km for petrol/diesel cars, or electric battery range in Kilometers (km) for EVs, e.g. "6.2 L/100 km" or "480 km range".
+
 If the image does not seem to contain or represent an automobile, please set "isCar" to false. Otherwise, set "isCar" to true.`,
     };
 
@@ -112,9 +118,9 @@ If the image does not seem to contain or represent an automobile, please set "is
             horsepower: { type: Type.STRING, description: "The specific horsepower rating, e.g., '315 hp' or '450 hp'." },
             torque: { type: Type.STRING, description: "The specific engine torque rating in lb-ft or Nm, e.g., '310 lb-ft' or '400 Nm'." },
             modelYear: { type: Type.STRING, description: "The most likely single model year of the specific car shown in the photo, e.g., '2023'." },
-            zeroToSixty: { type: Type.STRING, description: "Estimated 0-60 mph (or 0-100 km/h) acceleration time." },
-            estimatedNewPrice: { type: Type.STRING, description: "Original MSRP price range when sold brand new." },
-            estimatedUsedPrice: { type: Type.STRING, description: "Current estimated resale or used value range on the market." },
+            zeroToSixty: { type: Type.STRING, description: "Estimated 0-100 km/h acceleration time, e.g. '4.5 seconds'." },
+            estimatedNewPrice: { type: Type.STRING, description: "Original MSRP price range when sold brand new, expressed in Egyptian Pounds (EGP), e.g. 'EGP 1,850,000'." },
+            estimatedUsedPrice: { type: Type.STRING, description: "Current estimated resale or used value range on the Egyptian market in EGP, e.g. 'EGP 1.2M - 1.5M' or 'EGP 950,000 - 1,100,000'." },
             trivia: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
@@ -130,7 +136,7 @@ If the image does not seem to contain or represent an automobile, please set "is
               properties: {
                 transmission: { type: Type.STRING, description: "Typical transmission (e.g., 6-Speed Manual, 8-Speed Automatic, DCT, Direct-Drive)" },
                 driveType: { type: Type.STRING, description: "Drivetrain config (RWD, AWD, FWD, 4WD)" },
-                fuelEconomy: { type: Type.STRING, description: "EPA mpg estimate or EV battery range, e.g., '22/28 MPG' or '290 miles range'" }
+                fuelEconomy: { type: Type.STRING, description: "Estimated fuel consumption in L/100km or EV range in kilometers (km), e.g. '6.5 L/100 km' or '485 km range'." }
               },
               required: ["transmission", "driveType", "fuelEconomy"]
             }

@@ -10,6 +10,112 @@ import SampleCarousel from "./components/SampleCarousel";
 import GuideSection from "./components/GuideSection";
 import CarDetailsReport from "./components/CarDetailsReport";
 
+export interface AppTheme {
+  id: string;
+  name: string;
+  brand: string;
+  colorHex: string;
+  primaryBg: string; // Tailwind class
+  cardBg: string; // Tailwind class
+  primaryText: string; // Tailwind class
+  accentText: string; // Tailwind class
+  accentBg: string; // Tailwind class
+  accentBorder: string; // Tailwind class
+  accentHover: string; // Tailwind class
+  pulseBg: string; // Tailwind class
+  glowClass: string; // Tailwind class
+  accentHoverBg: string; // Tailwind class
+  loaderText: string; // Tailwind class
+}
+
+export const THEMES: Record<string, AppTheme> = {
+  bugatti: {
+    id: "bugatti",
+    name: "Monaco Blue",
+    brand: "Bugatti Chiron",
+    colorHex: "#3b82f6",
+    primaryBg: "bg-[#090b10]",
+    cardBg: "bg-[#10131b]",
+    primaryText: "text-blue-400",
+    accentText: "text-blue-500",
+    accentBg: "bg-blue-600",
+    accentBorder: "border-blue-500/30",
+    accentHover: "hover:bg-blue-500",
+    pulseBg: "bg-blue-500",
+    glowClass: "shadow-blue-900/10",
+    accentHoverBg: "hover:bg-blue-500",
+    loaderText: "text-blue-400"
+  },
+  ferrari: {
+    id: "ferrari",
+    name: "Scuderia Red",
+    brand: "Ferrari SF90",
+    colorHex: "#ef4444",
+    primaryBg: "bg-[#0e0707]",
+    cardBg: "bg-[#180f0f]",
+    primaryText: "text-red-400",
+    accentText: "text-red-500",
+    accentBg: "bg-red-600",
+    accentBorder: "border-red-500/30",
+    accentHover: "hover:bg-red-500",
+    pulseBg: "bg-red-500",
+    glowClass: "shadow-red-900/10",
+    accentHoverBg: "hover:bg-red-500",
+    loaderText: "text-red-400"
+  },
+  porsche: {
+    id: "porsche",
+    name: "Acid Lime",
+    brand: "911 GT3 RS",
+    colorHex: "#84cc16",
+    primaryBg: "bg-[#060a07]",
+    cardBg: "bg-[#0f1811]",
+    primaryText: "text-lime-400",
+    accentText: "text-lime-500",
+    accentBg: "bg-lime-500 text-black",
+    accentBorder: "border-lime-500/30",
+    accentHover: "hover:bg-lime-400",
+    pulseBg: "bg-lime-450",
+    glowClass: "shadow-lime-900/10",
+    accentHoverBg: "hover:bg-lime-400",
+    loaderText: "text-lime-400"
+  },
+  mclaren: {
+    id: "mclaren",
+    name: "Papaya Carbon",
+    brand: "McLaren Artura",
+    colorHex: "#f97316",
+    primaryBg: "bg-[#0e0a07]",
+    cardBg: "bg-[#1c130d]",
+    primaryText: "text-orange-400",
+    accentText: "text-orange-500",
+    accentBg: "bg-orange-600",
+    accentBorder: "border-orange-500/30",
+    accentHover: "hover:bg-orange-500",
+    pulseBg: "bg-orange-500",
+    glowClass: "shadow-orange-900/10",
+    accentHoverBg: "hover:bg-orange-500",
+    loaderText: "text-orange-400"
+  },
+  lamborghini: {
+    id: "lamborghini",
+    name: "Amethyst SVJ",
+    brand: "Aventador SVJ",
+    colorHex: "#d946ef",
+    primaryBg: "bg-[#0a050f]",
+    cardBg: "bg-[#160b24]",
+    primaryText: "text-fuchsia-400",
+    accentText: "text-fuchsia-500",
+    accentBg: "bg-fuchsia-600",
+    accentBorder: "border-fuchsia-500/30",
+    accentHover: "hover:bg-fuchsia-500",
+    pulseBg: "bg-fuchsia-500",
+    glowClass: "shadow-fuchsia-900/10",
+    accentHoverBg: "hover:bg-fuchsia-500",
+    loaderText: "text-fuchsia-450"
+  }
+};
+
 const HOTSPOTS = [
   { name: "Daikoku Parking Area, Yokohama", coords: "35.4612° N, 139.6714° E" },
   { name: "Nürburgring Boulevard, Germany", coords: "50.3341° N, 6.9427° E" },
@@ -21,6 +127,17 @@ const HOTSPOTS = [
 export default function App() {
   // Mobile UI Tabs: 'scan' | 'garage' | 'guide'
   const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'guide'>('scan');
+
+  // Sport tuning dashboard state
+  const [currThemeId, setCurrThemeId] = useState<string>(() => {
+    return localStorage.getItem("whipcheck_theme_id") || "bugatti";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("whipcheck_theme_id", currThemeId);
+  }, [currThemeId]);
+
+  const activeTheme = THEMES[currThemeId] || THEMES.bugatti;
   
   // Scans history & collection garage
   const [garage, setGarage] = useState<IdentifiedCar[]>([]);
@@ -257,27 +374,27 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0c] text-slate-350 flex flex-col font-sans antialiased md:py-6 md:px-4">
+    <div className={`min-h-screen ${activeTheme.primaryBg} text-slate-200 flex flex-col font-sans antialiased transition-colors duration-300 md:py-6 md:px-4`}>
       
       {/* Primary Container - Sized like a sleek modern mobile app on desktop, fully fluid on mobile */}
-      <div className="w-full max-w-md mx-auto bg-[#0f0f12] border-0 md:border md:border-slate-800 md:rounded-3xl shadow-2xl shadow-blue-950/20 flex flex-col overflow-hidden min-h-screen md:min-h-[840px] relative">
+      <div className={`w-full max-w-md mx-auto ${activeTheme.cardBg} border-0 md:border md:border-slate-800 md:rounded-3xl shadow-2xl ${activeTheme.glowClass} flex flex-col overflow-hidden min-h-screen md:min-h-[840px] relative transition-all duration-300`}>
         
         {/* HUD Scanner Top Bar Grid */}
         <header className="p-4 border-b border-slate-850 bg-slate-900/35 relative overflow-hidden shrink-0">
-          <div className="absolute top-0 right-0 h-16 w-16 bg-blue-500/5 rounded-full blur-xl pointer-events-none"></div>
+          <div className={`absolute top-0 right-0 h-16 w-16 ${activeTheme.pulseBg}/5 rounded-full blur-xl pointer-events-none`}></div>
           
           <div className="flex items-center justify-between relative z-10">
             <div className="space-y-0.5">
               <div className="flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded bg-blue-500 animate-pulse"></span>
+                <span className={`inline-block w-2.5 h-2.5 rounded-full ${activeTheme.accentBg} animate-pulse`}></span>
                 <h1 className="text-sm font-black tracking-widest text-slate-100 font-display">WHIPCHECK v4.5</h1>
               </div>
-              <p className="text-[10px] text-blue-500 font-mono tracking-wider">CHASSIS VISION ENGINE: ONLINE</p>
+              <p className={`text-[10px] ${activeTheme.primaryText} font-mono tracking-wider font-semibold`}>CHASSIS VISION ENGINE: ONLINE</p>
             </div>
 
             <div className="text-right">
               <span className="text-[9px] font-mono text-slate-500 block uppercase">Spotter Location</span>
-              <span className="text-[10px] font-mono text-blue-500 font-bold truncate max-w-[150px] inline-block">{gpsCoords}</span>
+              <span className={`text-[10px] font-mono ${activeTheme.primaryText} font-bold truncate max-w-[150px] inline-block`}>{gpsCoords}</span>
             </div>
           </div>
         </header>
@@ -285,13 +402,41 @@ export default function App() {
         {/* Real-time Health Status banner */}
         <div className="bg-[#0c0c0e] px-4 py-2 border-b border-slate-850/65 flex justify-between items-center text-[10px] font-mono">
           <div className="flex items-center gap-1">
-            <Cpu className="h-3.5 w-3.5 text-blue-500" />
+            <Cpu className={`h-3.5 w-3.5 ${activeTheme.primaryText}`} />
             <span className="text-slate-400">GPS Tracker:</span>
             <span className="text-slate-200 truncate max-w-[160px]">{gpsName}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
             <span className="text-emerald-400 font-bold">API ACTIVE</span>
+          </div>
+        </div>
+
+        {/* SPORT LIVERIES TUNER SELECTOR */}
+        <div className="px-4 py-2.5 bg-black/45 border-b border-slate-850/60 flex items-center justify-between gap-2 overflow-x-auto scrollbar-none shrink-0 transition-colors duration-350">
+          <div className="flex items-center gap-1 shrink-0 font-mono text-[9px] uppercase tracking-wider text-slate-400 font-bold">
+            <Sparkles className={`h-3.5 w-3.5 ${activeTheme.primaryText}`} />
+            <span>Livery Theme:</span>
+          </div>
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+            {Object.values(THEMES).map((t) => {
+              const isSelected = t.id === currThemeId;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setCurrThemeId(t.id)}
+                  className={`px-2.5 py-1 rounded-xl flex items-center gap-1 text-[10px] font-mono transition-all border cursor-pointer select-none font-bold shrink-0 ${
+                    isSelected 
+                      ? `${t.accentBg} ${t.accentBorder} text-slate-900 border-white/40 shadow-md scale-102` 
+                      : 'bg-slate-900/60 hover:bg-slate-800 border-slate-800/80 text-slate-300'
+                  }`}
+                  title={`${t.name} (${t.brand})`}
+                >
+                  <span className="inline-block w-2.5 h-2.5 rounded-full border border-black/20 shrink-0" style={{ backgroundColor: t.colorHex }}></span>
+                  <span className={isSelected ? 'text-slate-900' : 'text-slate-200'}>{t.id.toUpperCase()}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -304,10 +449,10 @@ export default function App() {
               
               {/* Standalone open tab notice if inside iframe sandbox */}
               {isInIframe && (
-                <div className="p-3 bg-blue-950/40 border border-blue-500/20 rounded-xl space-y-2 text-xs flex flex-col gap-2 shadow-lg">
+                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 text-xs flex flex-col gap-2 shadow-lg">
                   <div className="space-y-0.5">
-                    <p className="font-bold text-blue-300 flex items-center gap-1">
-                      <Layers className="h-3.5 w-3.5 text-blue-400 animate-pulse" />
+                    <p className={`font-bold ${activeTheme.primaryText} flex items-center gap-1`}>
+                      <Layers className={`h-3.5 w-3.5 ${activeTheme.primaryText} animate-pulse`} />
                       Safari/Chrome Iframe Constraint
                     </p>
                     <p className="text-[11px] text-slate-300 leading-normal">
@@ -318,10 +463,10 @@ export default function App() {
                     href={window.location.href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-3 py-2 rounded-lg shrink-0 transition"
+                    className={`inline-flex items-center justify-center gap-1.5 ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-xs px-3 py-2 rounded-lg shrink-0 transition`}
                   >
-                    <span>Open Standalone Tab</span>
-                    <ChevronRight className="h-3 w-3" />
+                    <span className="text-black">Open Standalone Tab</span>
+                    <ChevronRight className="h-3 w-3 text-black" />
                   </a>
                 </div>
               )}
@@ -331,16 +476,16 @@ export default function App() {
                 <div className="space-y-4">
                   {/* Futuristic Interactive Viewport Hero */}
                   <div className="p-6 rounded-2xl border border-slate-800 bg-[#07080a] text-center relative overflow-hidden group">
-                    <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: "radial-gradient(#3b82f6 1px, transparent 1px)", backgroundSize: "16px 16px" }}></div>
+                    <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: `radial-gradient(${activeTheme.colorHex} 1px, transparent 1px)`, backgroundSize: "16px 16px" }}></div>
                     
                     {/* Viewport Brackets decoration */}
-                    <div className="absolute top-3 left-3 w-4 h-4 border-t border-l border-blue-500/60 pointer-events-none"></div>
-                    <div className="absolute top-3 right-3 w-4 h-4 border-t border-r border-blue-500/60 pointer-events-none"></div>
-                    <div className="absolute bottom-3 left-3 w-4 h-4 border-b border-l border-blue-500/60 pointer-events-none"></div>
-                    <div className="absolute bottom-3 right-3 w-4 h-4 border-b border-r border-blue-500/60 pointer-events-none"></div>
+                    <div className={`absolute top-3 left-3 w-4 h-4 border-t border-l ${activeTheme.accentBorder} pointer-events-none`}></div>
+                    <div className={`absolute top-3 right-3 w-4 h-4 border-t border-r ${activeTheme.accentBorder} pointer-events-none`}></div>
+                    <div className={`absolute bottom-3 left-3 w-4 h-4 border-b border-l ${activeTheme.accentBorder} pointer-events-none`}></div>
+                    <div className={`absolute bottom-3 right-3 w-4 h-4 border-b border-r ${activeTheme.accentBorder} pointer-events-none`}></div>
 
                     <div className="my-3 flex justify-center">
-                      <div className="p-3.5 bg-blue-600/10 text-blue-400 rounded-2xl border border-blue-500/30 group-hover:scale-110 transition-transform duration-300">
+                      <div className={`p-3.5 bg-black/40 ${activeTheme.primaryText} rounded-2xl border ${activeTheme.accentBorder} group-hover:scale-110 transition-transform duration-300`}>
                         <CameraIcon className="w-8 h-8 pointer-events-none" />
                       </div>
                     </div>
@@ -353,17 +498,17 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-3 mt-5">
                       <button
                         onClick={startCamera}
-                        className="flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-3.5 px-2 rounded-xl transition duration-200 cursor-pointer shadow-lg shadow-blue-900/10 active:scale-98"
+                        className={`flex items-center justify-center gap-1.5 ${activeTheme.accentBg} ${activeTheme.accentHover} text-white font-bold text-xs py-3.5 px-2 rounded-xl transition duration-200 cursor-pointer shadow-lg ${activeTheme.glowClass} active:scale-98`}
                       >
-                        <CameraIcon className="h-4 w-4 text-white" />
-                        <span>Live Camera</span>
+                        <CameraIcon className="h-4 w-4 text-black" />
+                        <span className="text-black">Live Camera</span>
                       </button>
 
                       <label
                         htmlFor="car-file-upload"
                         className="flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white font-bold text-xs py-3.5 px-2 rounded-xl transition duration-200 cursor-pointer active:scale-98 shadow-md"
                       >
-                        <Upload className="h-4 w-4 text-emerald-400" />
+                        <Upload className={`h-4 w-4 ${activeTheme.primaryText}`} />
                         <span>Upload File</span>
                       </label>
                     </div>
@@ -389,13 +534,15 @@ export default function App() {
                         value={urlInput}
                         onChange={(e) => setUrlInput(e.target.value)}
                         placeholder="Type or paste image link..."
-                        className="flex-1 bg-slate-900 border border-slate-600 text-slate-50 placeholder-slate-400 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition font-mono"
+                        className={`flex-1 bg-slate-900 border border-slate-600 text-slate-50 placeholder-slate-400 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-slate-500 focus:ring-1 focus:ring-white/10 transition font-mono`}
                         required
                       />
                       <button
                         type="submit"
                         disabled={!urlInput.trim()}
-                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-850 disabled:text-slate-500 border border-transparent disabled:border-slate-800 text-white font-bold text-xs px-4 py-2.5 rounded-xl transition cursor-pointer shrink-0 uppercase tracking-widest font-mono shadow-md disabled:cursor-not-allowed"
+                        className={`disabled:bg-slate-850 disabled:text-slate-500 border border-transparent disabled:border-slate-800 font-bold text-xs px-4 py-2.5 rounded-xl transition cursor-pointer shrink-0 uppercase tracking-widest font-mono shadow-md disabled:cursor-not-allowed ${
+                          urlInput.trim() ? `${activeTheme.accentBg} ${activeTheme.accentHover} text-black` : 'bg-slate-800 text-slate-500'
+                        }`}
                       >
                         SCAN
                       </button>
@@ -403,11 +550,11 @@ export default function App() {
 
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 mt-2.5 px-1">
                       <span className="text-[9px] text-slate-500 font-mono">Tap target to auto-scan instantly:</span>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 font-semibold">
                         <button
                           type="button"
                           onClick={() => handleSelectSample("https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&q=80&w=800")}
-                          className="text-[9px] text-blue-400 hover:text-blue-300 underline font-mono cursor-pointer"
+                          className={`text-[9px] ${activeTheme.primaryText} hover:underline font-mono cursor-pointer`}
                         >
                           Porsche 911
                         </button>
@@ -415,7 +562,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleSelectSample("https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&q=80&w=800")}
-                          className="text-[9px] text-blue-400 hover:text-blue-300 underline font-mono cursor-pointer"
+                          className={`text-[9px] ${activeTheme.primaryText} hover:underline font-mono cursor-pointer`}
                         >
                           Corvette
                         </button>
@@ -440,11 +587,11 @@ export default function App() {
                     <span className="text-slate-400 block tracking-wider font-semibold uppercase">System Telemetry Log</span>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Lens Aperture</span>
-                      <span className="text-slate-350">f/1.8 Auto Calibration</span>
+                      <span className="text-zinc-200 font-medium">f/1.8 Auto Calibration</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Grid Resolution</span>
-                      <span className="text-slate-350">2560 x 1440 HD Matrix</span>
+                      <span className="text-zinc-200 font-medium">2560 x 1440 HD Matrix</span>
                     </div>
                   </div>
                 </div>
@@ -453,7 +600,7 @@ export default function App() {
               {/* Step 2: Camera Viewport Active */}
               {scanStep === 'capture' && (
                 <div className="space-y-4">
-                  <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-black border border-blue-500/50">
+                  <div className={`relative aspect-[3/4] rounded-2xl overflow-hidden bg-black border ${activeTheme.accentBorder}`}>
                     <video
                       ref={videoRef}
                       autoPlay
@@ -464,23 +611,23 @@ export default function App() {
                     {/* Scanner High Density Overlay decoration */}
                     <div className="absolute inset-0 pointer-events-none">
                       {/* Grid Target Frame */}
-                      <div className="absolute inset-8 border border-blue-500/20 rounded-lg">
-                        <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-blue-400"></div>
-                        <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-blue-400"></div>
-                        <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-blue-400"></div>
-                        <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-blue-400"></div>
+                      <div className="absolute inset-8 border border-white/10 rounded-lg">
+                        <div className={`absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2`} style={{ borderColor: activeTheme.colorHex }}></div>
+                        <div className={`absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2`} style={{ borderColor: activeTheme.colorHex }}></div>
+                        <div className={`absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2`} style={{ borderColor: activeTheme.colorHex }}></div>
+                        <div className={`absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2`} style={{ borderColor: activeTheme.colorHex }}></div>
                         
                         {/* Horizontal Pulsing scan sweep laser */}
-                        <div className="scanner-laser absolute left-0 right-0 h-1 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.8)] filter blur-[1px]"></div>
+                        <div className="scanner-laser absolute left-0 right-0 h-1 filter blur-[0.5px]" style={{ backgroundColor: activeTheme.colorHex, boxShadow: `0 0 10px ${activeTheme.colorHex}` }}></div>
                       </div>
 
                       {/* Diagnostic HUD coordinates info overlay */}
-                      <div className="absolute top-3 left-4 bg-black/70 backdrop-blur-md px-2 py-1 rounded border border-blue-500/20 text-[8px] font-mono text-blue-400">
+                      <div className={`absolute top-3 left-4 bg-black/75 backdrop-blur-md px-2 py-1 rounded border ${activeTheme.accentBorder} text-[8px] font-mono ${activeTheme.primaryText}`}>
                         RADAR_SIG: [ONLINE]
                         <div className="text-[7px] text-slate-400 mt-0.5">VELOCITY: 0.0 KM/H</div>
                       </div>
 
-                      <div className="absolute bottom-3 right-4 bg-black/70 backdrop-blur-md px-2 py-1 rounded border border-blue-500/20 text-[8px] font-mono text-blue-400">
+                      <div className={`absolute bottom-3 right-4 bg-black/75 backdrop-blur-md px-2 py-1 rounded border ${activeTheme.accentBorder} text-[8px] font-mono ${activeTheme.primaryText}`}>
                         SIGHT SCANNER IP
                         <div className="text-[7px] text-slate-400 mt-0.5">ISO 400 | AF_C</div>
                       </div>
@@ -491,21 +638,22 @@ export default function App() {
                   <div className="flex gap-3 justify-center items-center">
                     <button
                       onClick={triggerReset}
-                      className="px-4 py-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-350 text-xs font-semibold rounded-xl flex items-center gap-1 transition cursor-pointer"
+                      className="px-4 py-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-200 text-xs font-semibold rounded-xl flex items-center gap-1 transition cursor-pointer"
                     >
                       <RotateCcw className="h-4 w-4" /> Reset
                     </button>
 
                     <button
                       onClick={capturePhoto}
-                      className="w-16 h-16 rounded-full border-4 border-blue-600 bg-white/5 hover:bg-blue-600/10 flex items-center justify-center shadow-[0_0_20px_rgba(59,130,246,0.4)] transition duration-300 transform active:scale-95 cursor-pointer"
+                      className={`w-16 h-16 rounded-full border-4 ${activeTheme.accentBorder} bg-white/5 hover:bg-white/10 flex items-center justify-center hover:scale-105 transition-all duration-300 transform active:scale-95 cursor-pointer`}
+                      style={{ boxShadow: `0 0 15px ${activeTheme.colorHex}30` }}
                     >
-                      <div className="w-10 h-10 rounded-full bg-blue-500"></div>
+                      <div className="w-10 h-10 rounded-full" style={{ backgroundColor: activeTheme.colorHex }}></div>
                     </button>
 
                     <label
                       htmlFor="car-file-upload"
-                      className="px-4 py-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-350 text-xs font-semibold rounded-xl flex items-center gap-1 transition cursor-pointer"
+                      className="px-4 py-3 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-200 text-xs font-semibold rounded-xl flex items-center gap-1 transition cursor-pointer"
                     >
                       <Upload className="h-4 w-4" /> Gallery
                     </label>
@@ -515,23 +663,23 @@ export default function App() {
 
               {/* Step 3: Loading States with Immersive Tech Steps */}
               {(scanStep === 'uploading' || scanStep === 'enhancing' || scanStep === 'parsing_vision') && (
-                <div className="p-8 rounded-2xl border border-blue-500/20 bg-slate-900/50 text-center space-y-6 relative overflow-hidden">
-                  <div className="absolute inset-0 opacity-5" style={{ backgroundImage: "radial-gradient(#3b82f6 1px, transparent 1px)", backgroundSize: "20px 20px" }}></div>
+                <div className="p-8 rounded-2xl border border-slate-800 bg-[#0c0d11] text-center space-y-6 relative overflow-hidden">
+                  <div className="absolute inset-0 opacity-5" style={{ backgroundImage: `radial-gradient(${activeTheme.colorHex} 1px, transparent 1px)`, backgroundSize: "20px 20px" }}></div>
                   
                   <div className="flex justify-center relative">
                     {/* Animated spinning scanner radar */}
-                    <div className="relative w-20 h-20">
-                      <div className="absolute inset-0 border-4 border-blue-500/10 rounded-full"></div>
-                      <div className="absolute inset-0 border-4 border-t-blue-500 rounded-full animate-spin"></div>
-                      <div className="absolute inset-3 border border-slate-700/50 rounded-full flex items-center justify-center bg-slate-950">
-                        <Loader2 className="h-6 w-6 text-blue-400 animate-pulse" />
+                    <div className="relative w-23.5 h-20">
+                      <div className="absolute inset-0 border-4 border-slate-900 rounded-full"></div>
+                      <div className="absolute inset-0 border-4 border-t-transparent rounded-full animate-spin" style={{ borderTopColor: activeTheme.colorHex }}></div>
+                      <div className="absolute inset-3 border border-slate-800/80 rounded-full flex items-center justify-center bg-slate-950 shadow-inner">
+                        <Loader2 className={`h-6 w-6 ${activeTheme.loaderText} animate-pulse`} />
                       </div>
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    <p className="text-xs font-mono font-bold tracking-[0.2em] text-blue-400 uppercase">
-                      Neural Core Busy
+                    <p className={`text-xs font-mono font-bold tracking-[0.2em] ${activeTheme.primaryText} uppercase`}>
+                      Neural core scanning
                     </p>
                     <h3 className="text-sm font-bold text-slate-100 font-display">
                       {loadingStatusText}
@@ -572,20 +720,20 @@ export default function App() {
 
               {/* Step 5: Error Handling Block */}
               {scanStep === 'error' && (
-                <div className="p-6 rounded-2xl border border-red-500/20 bg-slate-900/40 text-center space-y-4">
+                <div className="p-6 rounded-2xl border border-red-500/20 bg-[#160b0b] text-center space-y-4">
                   <div className="inline-block p-3 bg-red-500/10 text-red-400 rounded-full border border-red-500/20">
                     <ShieldAlert className="h-6 w-6" />
                   </div>
                   <div className="space-y-1">
                     <h3 className="text-sm font-bold text-slate-200 uppercase font-display">Target Scan Failed</h3>
-                    <p className="text-xs text-slate-400 leading-relaxed max-w-xs mx-auto">
+                    <p className="text-xs text-slate-450 leading-relaxed max-w-xs mx-auto">
                       {errorMsg || "An unexpected error occurred during frame recognition."}
                     </p>
                   </div>
                   <div className="pt-2">
                     <button
                       onClick={triggerReset}
-                      className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-xl transition cursor-pointer"
+                      className={`w-full ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-900 font-bold text-xs py-3 rounded-xl transition cursor-pointer`}
                     >
                       Retry Protocol
                     </button>
@@ -709,15 +857,15 @@ export default function App() {
         </main>
 
         {/* FUTURISTIC PREMIUM MOBILE NAVIGATION BAR (Matches High Density styling) */}
-        <footer className="mt-auto bg-black/90 backdrop-blur-md border-t border-slate-850 p-3 shrink-0 relative z-20">
+        <footer className="mt-auto bg-black/95 backdrop-blur-md border-t border-slate-850 p-3 shrink-0 relative z-20">
           <div className="flex justify-around items-center max-w-sm mx-auto">
             
             {/* Nav item 1 */}
             <button
               onClick={() => { setActiveTab('guide'); setSelectedGarageCar(null); }}
-              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'guide' ? 'text-blue-500 opacity-100 scale-105' : 'text-slate-500 hover:text-slate-350'}`}
+              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'guide' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
             >
-              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'guide' ? 'border-blue-500/30 bg-blue-500/10' : 'border-transparent'}`}>
+              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'guide' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
                 <Compass className="h-4 w-4" />
               </div>
               <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Guide</span>
@@ -730,12 +878,14 @@ export default function App() {
             >
               <div className={`w-12 h-12 rounded-full border-2 transition-all flex items-center justify-center ${
                 activeTab === 'scan' 
-                  ? 'border-blue-500 bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.5)]' 
+                  ? `border-white bg-[#0e0f14]` 
                   : 'border-slate-700 bg-slate-900 group-hover:border-slate-500'
-              }`}>
-                <CameraIcon className={`h-5 w-5 ${activeTab === 'scan' ? 'text-blue-400' : 'text-slate-400'}`} />
+              }`}
+              style={activeTab === 'scan' ? { borderColor: activeTheme.colorHex, boxShadow: `0 0 15px ${activeTheme.colorHex}60` } : undefined}
+              >
+                <CameraIcon className={`h-5 w-5 ${activeTab === 'scan' ? activeTheme.primaryText : 'text-slate-400'}`} />
               </div>
-              <span className={`text-[9px] font-mono uppercase tracking-widest font-bold -mt-1 ${activeTab === 'scan' ? 'text-blue-400' : 'text-slate-500'}`}>
+              <span className={`text-[9px] font-mono uppercase tracking-widest font-bold -mt-1 ${activeTab === 'scan' ? activeTheme.primaryText : 'text-slate-500'}`}>
                 Scan
               </span>
             </button>
@@ -743,9 +893,9 @@ export default function App() {
             {/* Nav item 3 */}
             <button
               onClick={() => { setActiveTab('garage'); setSelectedGarageCar(null); }}
-              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'garage' ? 'text-blue-500 opacity-100 scale-105' : 'text-slate-500 hover:text-slate-350'}`}
+              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'garage' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
             >
-              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'garage' ? 'border-blue-500/30 bg-blue-500/10' : 'border-transparent'}`}>
+              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'garage' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
                 <Database className="h-4 w-4" />
               </div>
               <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Garage</span>
