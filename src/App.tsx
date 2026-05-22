@@ -148,6 +148,7 @@ export default function App() {
   const [garageSearch, setGarageSearch] = useState<string>("");
   const [garageSortBy, setGarageSortBy] = useState<string>("newest"); // "newest", "brand", "year", "confidence"
   const [garageGroupBy, setGarageGroupBy] = useState<string>("none"); // "none", "brand", "category", "color"
+  const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
 
   // Scan workflow state
   const [scanStep, setScanStep] = useState<ScanStepType>('idle');
@@ -175,6 +176,18 @@ export default function App() {
     } catch (e) {
       setIsInIframe(true);
     }
+
+    // Check backend API health and key configuration
+    fetch("/api/health")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && typeof data.apiKeyConfigured === "boolean") {
+          setApiKeyConfigured(data.apiKeyConfigured);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch backend health status:", err);
+      });
 
     try {
       const saved = localStorage.getItem("car_spotter_garage_v2");
@@ -539,6 +552,21 @@ export default function App() {
           {activeTab === 'scan' && (
             <div className="space-y-5">
               
+              {/* API Key Missing Notice */}
+              {apiKeyConfigured === false && (
+                <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-xl space-y-1.5 text-xs flex flex-col shadow-md">
+                  <div className="flex items-start gap-2">
+                    <ShieldAlert className="h-4 w-4 text-amber-500 shrink-0 mt-0.5 animate-pulse" />
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-amber-400">Gemini Key Needed (Production Mode)</p>
+                      <p className="text-[11px] text-zinc-300 leading-normal">
+                        To enable core Vision AI scans on your hosting provider, please configure the <code className="px-1 py-0.5 bg-black/40 rounded font-mono text-amber-300">GEMINI_API_KEY</code> environment secret.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Standalone open tab notice if inside iframe sandbox */}
               {isInIframe && (
                 <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 text-xs flex flex-col gap-2 shadow-lg">
