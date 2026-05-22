@@ -260,9 +260,9 @@ export default function App() {
             <div className="space-y-0.5">
               <div className="flex items-center gap-1.5">
                 <span className="inline-block w-2 h-2 rounded bg-blue-500 animate-pulse"></span>
-                <h1 className="text-sm font-black tracking-widest text-slate-100 font-display">VISION_CORE v4.5</h1>
+                <h1 className="text-sm font-black tracking-widest text-slate-100 font-display">WHIPCHECK v4.5</h1>
               </div>
-              <p className="text-[10px] text-blue-500 font-mono tracking-wider">CHASSIS CLOUD ENGINE: ONLINE</p>
+              <p className="text-[10px] text-blue-500 font-mono tracking-wider">CHASSIS VISION ENGINE: ONLINE</p>
             </div>
 
             <div className="text-right">

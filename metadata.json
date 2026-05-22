@@ -1,6 +1,6 @@
 {
-  "name": "Car Make and Model Identifier",
-  "description": "A mobile web application that captures car photos to identify their make, model, year, and specifications using computer vision.",
+  "name": "whipcheck",
+  "description": "A mobile web application that captures any car's photo to instantly identify its make, model, year, and specifications.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
