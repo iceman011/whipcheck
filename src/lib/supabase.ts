@@ -57,36 +57,6 @@ export const getActiveSupabaseConfig = () => {
 
 
 /**
- * Maps a plain TypeScript vehicle object to the Supabase database shape
- */
-function serializeCar(car: IdentifiedCar) {
-  return {
-    id: car.id,
-    timestamp: car.timestamp,
-    image: car.image,
-    isCar: car.isCar,
-    make: car.make,
-    model: car.model,
-    generation: car.generation,
-    yearRange: car.yearRange,
-    confidence: car.confidence,
-    color: car.color,
-    category: car.category,
-    engineType: car.engineType,
-    power: car.power,
-    horsepower: car.horsepower,
-    torque: car.torque,
-    modelYear: car.modelYear,
-    zeroToSixty: car.zeroToSixty,
-    estimatedNewPrice: car.estimatedNewPrice,
-    estimatedUsedPrice: car.estimatedUsedPrice,
-    trivia: JSON.stringify(car.trivia),
-    tips: JSON.stringify(car.tips),
-    specs: JSON.stringify(car.specs),
-  };
-}
-
-/**
  * Maps a Supabase row back to the TypeScript IdentifiedCar schema
  */
 function deserializeRow(row: any): IdentifiedCar {
@@ -162,13 +132,195 @@ export async function fetchSupabaseGarage(): Promise<IdentifiedCar[]> {
 export async function saveSupabaseCar(car: IdentifiedCar): Promise<void> {
   if (!supabase) throw new Error("Supabase is not configured.");
 
+  const serialized = await serializeCar(car);
   const { error } = await supabase
     .from("vehicles")
-    .upsert(serializeCar(car), { onConflict: "id" });
+    .upsert(serialized, { onConflict: "id" });
 
   if (error) {
     throw error;
   }
+}
+
+/**
+ * Maps a plain TypeScript vehicle object to the Supabase database shape
+ * Scopes to current logged in user ID if available
+ */
+async function serializeCar(car: IdentifiedCar) {
+  let userId: string | null = null;
+  if (supabase) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        userId = user.id;
+      }
+    } catch (e) {
+      console.warn("Could not retrieve authenticated user ID:", e);
+    }
+  }
+
+  return {
+    id: car.id,
+    timestamp: car.timestamp,
+    image: car.image,
+    isCar: car.isCar,
+    make: car.make,
+    model: car.model,
+    generation: car.generation,
+    yearRange: car.yearRange,
+    confidence: car.confidence,
+    color: car.color,
+    category: car.category,
+    engineType: car.engineType,
+    power: car.power,
+    horsepower: car.horsepower,
+    torque: car.torque,
+    modelYear: car.modelYear,
+    zeroToSixty: car.zeroToSixty,
+    estimatedNewPrice: car.estimatedNewPrice,
+    estimatedUsedPrice: car.estimatedUsedPrice,
+    trivia: JSON.stringify(car.trivia),
+    tips: JSON.stringify(car.tips),
+    specs: JSON.stringify(car.specs),
+    ...(userId ? { user_id: userId } : {})
+  };
+}
+
+/**
+ * Sign in/up with OTP (One-Time Password / Login Code sent to email)
+ */
+export async function sendOtpCode(email: string): Promise<{ error: any }> {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { error } = await supabase.auth.signInWithOtp({
+    email: email.trim(),
+    options: {
+      shouldCreateUser: true,
+      emailRedirectTo: window.location.origin,
+    }
+  });
+  return { error };
+}
+
+/**
+ * Verify OTP Code
+ */
+export async function verifyOtpCode(email: string, token: string): Promise<{ data: any; error: any }> {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  
+  const trimmedToken = token.trim();
+  
+  // 1. If the user pasted a full Supabase confirmation URL
+  if (trimmedToken.includes("http://") || trimmedToken.includes("https://") || trimmedToken.includes("token_hash=") || trimmedToken.includes("code=")) {
+    try {
+      let parsedUrl: URL;
+      if (trimmedToken.startsWith("http://") || trimmedToken.startsWith("https://")) {
+        parsedUrl = new URL(trimmedToken);
+      } else {
+        // Handle partial query strings
+        parsedUrl = new URL(`https://dummy.com?${trimmedToken}`);
+      }
+      
+      const tokenHash = parsedUrl.searchParams.get("token_hash");
+      const code = parsedUrl.searchParams.get("code");
+      const typeParam = parsedUrl.searchParams.get("type") || "signup";
+      
+      if (tokenHash) {
+        // Try both signup and magiclink type verifying the token_hash
+        const typesToTry: ("signup" | "magiclink" | "invite" | "email_change")[] = [
+          typeParam as any,
+          "signup",
+          "magiclink"
+        ];
+        
+        let lastError = null;
+        for (const currentType of typesToTry) {
+          const { data, error } = await supabase.auth.verifyOtp({
+            token_hash: tokenHash,
+            type: currentType,
+          });
+          if (!error) {
+            return { data, error: null };
+          }
+          lastError = error;
+        }
+        return { data: null, error: lastError };
+      }
+      
+      if (code) {
+        // Exchange authorization code for session
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        return { data, error };
+      }
+      
+      // Fallback: If they pasted a URL containing raw token query parameters
+      const rawToken = parsedUrl.searchParams.get("token") || parsedUrl.searchParams.get("code") || trimmedToken;
+      if (rawToken && rawToken !== trimmedToken) {
+        const typesToTry: ("email" | "signup" | "magiclink")[] = ["email", "signup", "magiclink"];
+        let lastError = null;
+        for (const currentType of typesToTry) {
+          const { data, error } = await supabase.auth.verifyOtp({
+            email: email.trim(),
+            token: rawToken,
+            type: currentType,
+          });
+          if (!error) {
+            return { data, error: null };
+          }
+          lastError = error;
+        }
+        return { data: null, error: lastError };
+      }
+    } catch (urlErr) {
+      console.warn("Failed to parse link URL, checking as raw token", urlErr);
+    }
+  }
+
+  // 2. Standard flow: try verifying the raw 6-digit code or pasted token across multiple types
+  const typesToTry: ("email" | "signup" | "magiclink")[] = ["email", "signup", "magiclink"];
+  let lastError = null;
+  
+  for (const currentType of typesToTry) {
+    try {
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: email.trim(),
+        token: trimmedToken,
+        type: currentType,
+      });
+      
+      if (!error) {
+        return { data, error: null };
+      }
+      lastError = error;
+    } catch (e: any) {
+      lastError = e;
+    }
+  }
+  
+  return { data: null, error: lastError };
+}
+
+/**
+ * Sign in with Social Provider (OAuth)
+ */
+export async function signInWithSocial(provider: "google" | "github" | "discord") {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider,
+    options: {
+      redirectTo: window.location.origin,
+    }
+  });
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Logout
+ */
+export async function signOutUser(): Promise<void> {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
 }
 
 /**

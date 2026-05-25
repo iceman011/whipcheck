@@ -3,7 +3,8 @@ import {
   Camera as CameraIcon, Upload, Sparkles, History, Compass, Database, 
   Trash2, ShieldAlert, CheckCircle2, ChevronRight, RotateCcw, 
   MapPin, Loader2, Gauge, Settings, Cpu, HelpCircle, RefreshCw, Layers, ShieldCheck,
-  Search, ArrowUpDown, SlidersHorizontal, Cloud, CloudOff, Server, Copy, Check, ExternalLink, Code
+  Search, ArrowUpDown, SlidersHorizontal, Cloud, CloudOff, Server, Copy, Check, ExternalLink, Code,
+  LogOut, User, Mail, Lock
 } from "lucide-react";
 import { IdentifiedCar, ScanStepType } from "./types";
 import StatusIndicator from "./components/StatusIndicator";
@@ -17,7 +18,12 @@ import {
   removeSupabaseCar, 
   syncLocalGarageToCloud,
   getActiveSupabaseConfig,
-  updateSupabaseConfig
+  updateSupabaseConfig,
+  sendOtpCode,
+  verifyOtpCode,
+  signInWithSocial,
+  signOutUser,
+  supabase
 } from "./lib/supabase";
 
 export interface AppTheme {
@@ -135,8 +141,8 @@ const HOTSPOTS = [
 ];
 
 export default function App() {
-  // Mobile UI Tabs: 'scan' | 'garage' | 'guide' | 'migration'
-  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'guide' | 'migration'>('scan');
+  // Mobile UI Tabs: 'scan' | 'garage' | 'guide' | 'account'
+  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'guide' | 'account'>('scan');
 
   // Sport tuning dashboard state
   const [currThemeId, setCurrThemeId] = useState<string>(() => {
@@ -159,12 +165,21 @@ export default function App() {
   const [garageGroupBy, setGarageGroupBy] = useState<string>("none"); // "none", "brand", "category", "color"
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
 
-  // Supabase Sync States
+  // Supabase Sync & Authenticative States
   const [isSupabaseSyncing, setIsSupabaseSyncing] = useState<boolean>(false);
   const [supabaseStatus, setSupabaseStatus] = useState<'idle' | 'synced' | 'error'>('idle');
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
   const [copiedSql, setCopiedSql] = useState<boolean>(false);
   const [syncProgress, setSyncProgress] = useState<string | null>(null);
+
+  // User Authentication hook parameters
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [authEmail, setAuthEmail] = useState<string>(() => localStorage.getItem("whipcheck_auth_email") || "");
+  const [authOtpCode, setAuthOtpCode] = useState<string>("");
+  const [authStep, setAuthStep] = useState<'idle' | 'otp_sent'>('idle');
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [authErrorInput, setAuthErrorInput] = useState<string | null>(null);
 
   // Admin Gateway and Live Parameters States
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
@@ -228,42 +243,7 @@ export default function App() {
       console.error("Failed to load local garage items", e);
     }
 
-    // Connect to Supabase and merge databases recursively if available
-    const initSupabaseSync = async () => {
-      if (isSupabaseConfigured()) {
-        try {
-          setIsSupabaseSyncing(true);
-          const cloudCars = await fetchSupabaseGarage();
-          
-          const cloudMap = new Map(cloudCars.map(c => [c.id, c]));
-          const merged = [...cloudCars];
-          
-          // Find any local cars that aren't pushed to the cloud yet (offline additions)
-          const unsyncedLocal = localCars.filter(lc => !cloudMap.has(lc.id));
-          if (unsyncedLocal.length > 0) {
-            // Push offline additions to cloud silently
-            await syncLocalGarageToCloud(unsyncedLocal);
-            // Re-fetch or merge manually
-            unsyncedLocal.forEach(car => {
-              if (!cloudMap.has(car.id)) {
-                merged.unshift(car);
-              }
-            });
-          }
-          
-          setGarage(merged);
-          localStorage.setItem("car_spotter_garage_v2", JSON.stringify(merged));
-          setSupabaseStatus("synced");
-        } catch (err: any) {
-          console.error("Supabase failed to initialize sync:", err);
-          setSupabaseStatus("error");
-          setSupabaseError(err.message || String(err));
-        } finally {
-          setIsSupabaseSyncing(false);
-        }
-      }
-    };
-    initSupabaseSync();
+    // Cloud sync is handled reactively by the authentication session listener below
 
     // Try fetching real geolocation
     if (navigator.geolocation) {
@@ -283,6 +263,124 @@ export default function App() {
       );
     }
   }, []);
+
+  // Reactive Listener for Supabase Auth State Changes and Scoped syncs
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !supabase) return;
+    
+    // Check initial user session info
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setCurrentUser(user);
+      if (user) {
+        syncUserGarage(user);
+      }
+    }).catch(err => {
+      console.warn("Initial getUser failed:", err);
+    });
+
+    // Detect and handle magic-link redirects (PKCE or Hash confirmation URL token hashes)
+    const handleAuthRedirects = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      const tokenHash = params.get("token_hash");
+      const type = (params.get("type") as any) || "signup";
+
+      if ((code || tokenHash) && supabase) {
+        setAuthLoading(true);
+        setAuthMessage("Configuring secure cloud session from confirmation email...");
+        try {
+          let result;
+          if (code) {
+            result = await supabase.auth.exchangeCodeForSession(code);
+          } else if (tokenHash) {
+            result = await supabase.auth.verifyOtp({ token_hash: tokenHash, type, options: { redirectTo: window.location.origin } });
+          }
+
+          if (result?.error) {
+            setAuthErrorInput(`Authentication failed: ${result.error.message}`);
+          } else if (result?.data?.user) {
+            setAuthMessage("Successfully signed in via email link authentication!");
+            const authUser = result.data.user;
+            setCurrentUser(authUser);
+            syncUserGarage(authUser);
+          }
+        } catch (err: any) {
+          console.error("Auth redirect error:", err);
+          setAuthErrorInput(`Handling error: ${err.message || String(err)}`);
+        } finally {
+          setAuthLoading(false);
+          // Clear URL query parameters cleanly
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+    };
+    handleAuthRedirects();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const user = session?.user || null;
+      setCurrentUser(user);
+      if (user) {
+        syncUserGarage(user);
+      } else {
+        // Fallback to offline / anonymous state
+        const saved = localStorage.getItem("car_spotter_garage_v2");
+        if (saved) {
+          try {
+            setGarage(JSON.parse(saved));
+          } catch(e) {
+            setGarage([]);
+          }
+        } else {
+          setGarage([]);
+        }
+        setSupabaseStatus("idle");
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  const syncUserGarage = async (user: any) => {
+    if (!user) return;
+    try {
+      setIsSupabaseSyncing(true);
+      const cloudCars = await fetchSupabaseGarage();
+      
+      let localCars: IdentifiedCar[] = [];
+      const savedStr = localStorage.getItem("car_spotter_garage_v2");
+      if (savedStr) {
+        try {
+          localCars = JSON.parse(savedStr);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      
+      const cloudMap = new Map(cloudCars.map(c => [c.id, c]));
+      const merged = [...cloudCars];
+      
+      const unsyncedLocal = localCars.filter(lc => !cloudMap.has(lc.id));
+      if (unsyncedLocal.length > 0) {
+        await syncLocalGarageToCloud(unsyncedLocal);
+        const freshCars = await fetchSupabaseGarage();
+        setGarage(freshCars);
+        localStorage.setItem("car_spotter_garage_v2", JSON.stringify(freshCars));
+      } else {
+        setGarage(cloudCars);
+        localStorage.setItem("car_spotter_garage_v2", JSON.stringify(cloudCars));
+      }
+      setSupabaseStatus("synced");
+      setSupabaseError(null);
+    } catch (err: any) {
+      console.error("Supabase failed user sync:", err);
+      setSupabaseStatus("error");
+      setSupabaseError(err.message || String(err));
+    } finally {
+      setIsSupabaseSyncing(false);
+    }
+  };
 
   // Sync garage with localstorage and cloud
   const saveToGarage = async (car: IdentifiedCar) => {
@@ -709,6 +807,90 @@ create policy "Allow public access to vehicles"
     
     setParamFeedback("Parameters reset to compiler environment variables.");
     setTimeout(() => setParamFeedback(null), 4000);
+  };
+
+  const handleSendOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail.trim()) {
+      setAuthErrorInput("Please enter a valid email address.");
+      return;
+    }
+    setAuthLoading(true);
+    setAuthErrorInput(null);
+    setAuthMessage(null);
+    try {
+      const emailVal = authEmail.trim();
+      localStorage.setItem("whipcheck_auth_email", emailVal);
+      const { error } = await sendOtpCode(emailVal);
+      if (error) {
+        setAuthErrorInput(error.message || String(error));
+      } else {
+        setAuthStep("otp_sent");
+        setAuthMessage("Access code sent! Please check your email inbox (and spam folder) for your login OTP.");
+      }
+    } catch (err: any) {
+      setAuthErrorInput(err.message || String(err));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authOtpCode.trim()) {
+      setAuthErrorInput("Please enter the verification code.");
+      return;
+    }
+    setAuthLoading(true);
+    setAuthErrorInput(null);
+    setAuthMessage(null);
+    try {
+      const emailVal = authEmail.trim();
+      const codeVal = authOtpCode.trim();
+      const { data, error } = await verifyOtpCode(emailVal, codeVal);
+      if (error) {
+        setAuthErrorInput(error.message || String(error));
+      } else {
+        localStorage.setItem("whipcheck_auth_email", emailVal);
+        setAuthMessage("Success! Access granted.");
+        setAuthStep("idle");
+        setAuthOtpCode("");
+        if (data?.user) {
+          setCurrentUser(data.user);
+          syncUserGarage(data.user);
+        }
+      }
+    } catch (err: any) {
+      setAuthErrorInput(err.message || String(err));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSocialPlatformLogin = async (provider: "google" | "github" | "discord") => {
+    setAuthLoading(true);
+    setAuthErrorInput(null);
+    setAuthMessage(null);
+    try {
+      await signInWithSocial(provider);
+    } catch (err: any) {
+      setAuthErrorInput(err.message || String(err));
+      setAuthLoading(false);
+    }
+  };
+
+  const handleUserLogout = async () => {
+    setAuthLoading(true);
+    try {
+      await signOutUser();
+      setCurrentUser(null);
+      setAuthMessage("Signed out successfully.");
+      setTimeout(() => setAuthMessage(null), 3000);
+    } catch (err: any) {
+      setAuthErrorInput(err.message || String(err));
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   return (
@@ -1326,194 +1508,301 @@ create policy "Allow public access to vehicles"
             <GuideSection />
           )}
 
-          {/* TAB 4: CLOUD INTEGRATION & PRODUCTION MIGRATION */}
-          {activeTab === 'migration' && (
-            <div className="space-y-6">
+          {/* TAB 4: SECURED CLOUD PORTAL & AUTHENTICATION */}
+          {activeTab === 'account' && (
+            <div className="space-y-6 animate-fade-in">
               {/* Header Title */}
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <h2 className="text-sm font-black tracking-wider text-slate-100 font-display uppercase">Cloud Sync & Deploy</h2>
-                  <p className="text-[10px] text-slate-500 uppercase font-mono">Migrate to production platforms</p>
+                  <h2 className="text-sm font-black tracking-wider text-slate-100 font-display uppercase">Secured Cloud Sync</h2>
+                  <p className="text-[10px] text-slate-500 uppercase font-mono">Personal vehicle database portal</p>
                 </div>
                 <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full text-[10px] font-mono">
-                  <span className={`w-1.5 h-1.5 rounded-full ${isSupabaseConfigured() ? "bg-emerald-500 animate-pulse" : "bg-amber-500 animate-pulse"}`}></span>
-                  <span className={isSupabaseConfigured() ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>
-                    {isSupabaseConfigured() ? "Supabase Cloud Enabled" : "Offline Local Mode"}
+                  <span className={`w-1.5 h-1.5 rounded-full ${currentUser ? "bg-emerald-500 animate-pulse" : isSupabaseConfigured() ? "bg-blue-500 animate-pulse" : "bg-amber-500 animate-pulse"}`}></span>
+                  <span className={currentUser ? "text-emerald-400 font-bold" : isSupabaseConfigured() ? "text-blue-400 font-bold" : "text-amber-400 font-bold"}>
+                    {currentUser ? "User Session Active" : isSupabaseConfigured() ? "Cloud Active" : "Local-Only"}
                   </span>
                 </div>
               </div>
 
-              {/* ADMIN GATE BARRIER */}
-              {!isAdminLoggedIn ? (
-                <div className="max-w-md mx-auto my-8 p-6 bg-slate-900 border border-slate-850 rounded-2xl shadow-xl space-y-6 text-center font-sans">
+              {!isSupabaseConfigured() ? (
+                /* Dynamic fallback in case supabase is not configured */
+                <div className="p-6 bg-slate-950 rounded-2xl border border-slate-850 text-center space-y-4 font-sans">
                   <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 flex items-center justify-center mx-auto">
-                    <ShieldCheck className="h-6 w-6 animate-pulse" />
+                    <CloudOff className="h-6 w-6" />
                   </div>
                   <div className="space-y-1.5">
-                    <h3 className="text-sm font-black uppercase tracking-widest text-slate-100 font-mono">Admin Authorization Required</h3>
-                    <p className="text-[11px] text-slate-400">
-                      Please enter the administrator passcode to access live deployment parameters, database sync procedures, and static export guides.
+                    <h3 className="text-xs font-bold uppercase text-slate-300 font-mono tracking-wide">Cloud Connectivity Inactive</h3>
+                    <p className="text-[11px] text-slate-500 leading-normal max-w-xs mx-auto">
+                      Supabase keys have not been set in the environment files. Set <code className="text-amber-400 font-mono text-[10px]">VITE_SUPABASE_URL</code> and <code className="text-amber-400 font-mono text-[10px]">VITE_SUPABASE_ANON_KEY</code> to enable multi-user accounts.
                     </p>
                   </div>
-
-                  <form onSubmit={handleAdminLogin} className="space-y-3">
-                    <div className="relative">
-                      <input
-                        type={showPassword ? "text" : "password"}
-                        placeholder="Enter Admin Authorization Key..."
-                        value={adminPasswordInput}
-                        onChange={(e) => setAdminPasswordInput(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-xs text-center text-slate-200 placeholder-slate-600 focus:outline-none focus:border-red-500/40 transition font-mono tracking-widest"
-                      />
-                    </div>
-                    {adminError && (
-                      <p className="text-[10px] text-red-400 font-mono">{adminError}</p>
-                    )}
-                    
-                    <button
-                      type="submit"
-                      className={`w-full text-xs font-bold font-mono uppercase py-2 rounded-lg cursor-pointer bg-red-600 hover:bg-red-500 text-white transition`}
-                    >
-                      Verify Credentials
-                    </button>
-                  </form>
-
-                  <div className="p-3 bg-slate-950 rounded-lg border border-slate-850 text-left text-[10px] text-slate-500 leading-normal space-y-1">
-                    <p className="font-bold text-slate-400 uppercase font-mono text-[9px]">Developer Notice:</p>
-                    <p>The fallback admin passcode is configured to <code className="px-1 py-0.5 bg-black rounded font-mono text-red-400">admin123</code>. In production environments, this can be customized in the deployment secrets.</p>
+                  
+                  <div className="p-3 bg-slate-900/40 rounded-xl border border-slate-850/80 text-left text-[10px] leading-relaxed text-slate-400">
+                    <p className="font-bold text-slate-300 uppercase font-mono text-[9px] mb-1">Testing Overrides:</p>
+                    You can override active client metrics instantly at runtime using the <strong>System operator</strong> input at the bottom of this viewport.
                   </div>
                 </div>
               ) : (
-                <>
-                  {/* Admin Session Indicator & Log Out */}
-                  <div className="p-3 bg-indigo-950/20 border border-indigo-500/20 rounded-xl flex items-center justify-between font-sans text-xs">
-                    <div className="flex items-center gap-2">
-                      <ShieldCheck className="h-4 w-4 text-indigo-400 shrink-0" />
-                      <span className="text-slate-300">Authorized Admin Session Active</span>
-                    </div>
-                    <button
-                      onClick={handleAdminLogout}
-                      className="px-2.5 py-1 rounded bg-slate-950 border border-slate-800 hover:bg-slate-800 text-[10px] uppercase font-mono tracking-wider font-bold text-slate-400 cursor-pointer transition"
-                    >
-                      Lock / Logout
-                    </button>
-                  </div>
-
-                  {/* LIVE PARAMETER ADJUSTMENTS (Interactive Controls) */}
-                  <div className="p-4 rounded-xl border border-red-500/20 bg-slate-900/40 space-y-4 font-sans relative overflow-hidden">
-                    <div className="flex items-start gap-3">
-                      <div className="p-1.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 shrink-0">
-                        <Settings className="h-4 w-4" />
-                      </div>
-                      <div className="space-y-1 flex-1">
-                        <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Live Parameter Controls</h4>
-                        <p className="text-[11px] text-slate-400 leading-normal">
-                          Modify connection parameters dynamically. These overrides are stored in the browser and will directly update the active database connectivity context immediately.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3 pt-1">
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Project API URL</label>
-                        <input
-                          type="text"
-                          value={customSupabaseUrl}
-                          onChange={(e) => setCustomSupabaseUrl(e.target.value)}
-                          placeholder="https://your-project.supabase.co"
-                          className="w-full bg-slate-950 border border-slate-850 rounded px-3 py-1.5 text-xs text-slate-200 font-mono tracking-wide focus:outline-none focus:border-red-500/55"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Service / Anon API Key</label>
-                        <input
-                          type="text"
-                          value={customSupabaseAnonKey}
-                          onChange={(e) => setCustomSupabaseAnonKey(e.target.value)}
-                          placeholder="eyJhbGciOi..."
-                          className="w-full bg-slate-950 border border-slate-850 rounded px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-red-500/55"
-                        />
-                      </div>
-
-                      <div className="flex gap-2.5 pt-1">
-                        <button
-                          onClick={handleSaveParameters}
-                          className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold font-mono uppercase text-[10px] py-1.5 rounded transition cursor-pointer"
-                        >
-                          Apply Overrides
-                        </button>
-                        <button
-                          onClick={handleResetParameters}
-                          className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold font-mono uppercase text-[10px] py-1.5 rounded transition cursor-pointer"
-                        >
-                          Reset
-                        </button>
-                      </div>
+                /* Supabase IS configured: authenticate or show session summary */
+                <div className="space-y-6">
+                  {!currentUser ? (
+                    /* CASE: USER LOGGED OUT - show sign in with email OTP or social providers */
+                    <div className="space-y-6">
                       
-                      {paramFeedback && (
-                        <div className="text-[9.5px] p-2 bg-emerald-990/35 border border-emerald-500/20 text-emerald-400 rounded text-center font-sans font-medium">
-                          {paramFeedback}
+                      {/* Authenticate form core */}
+                      <div className="p-5 bg-slate-900/60 rounded-2xl border border-slate-850 space-y-5 font-sans relative">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-indigo-400`}>
+                            <Lock className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Sign In / Register</h3>
+                            <p className="text-[10.5px] text-slate-400 leading-normal mt-0.5">
+                              Establish your custom cloud garage. Scans will sync automatically to your individual database profile.
+                            </p>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  </div>
 
-                  {/* Status card block */}
-                  <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-850 space-y-3 font-sans">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg ${isSupabaseConfigured() ? "bg-emerald-500/10 border border-emerald-500/25 text-emerald-400" : "bg-slate-950 border border-slate-800 text-slate-500"}`}>
-                        {isSupabaseConfigured() ? <Cloud className="h-5 w-5" /> : <CloudOff className="h-5 w-5" />}
-                      </div>
-                      <div>
-                        <h3 className="text-xs font-bold font-mono text-slate-100 uppercase tracking-wide">
-                          {isSupabaseConfigured() ? "Connected Supabase Instance" : "Secure Local Sandbox Active"}
-                        </h3>
-                        <p className="text-[11px] text-slate-400 leading-normal mt-0.5">
-                          {isSupabaseConfigured() 
-                            ? `Live backend is writing and persisting vehicles inside your real cloud PostgreSQL instance.`
-                            : `All vehicles and photos are saved directly inside your local browser storage (localStorage). Configure keys to unlock live cloud databases.`
-                          }
-                        </p>
-                      </div>
-                    </div>
-
-                    {isSupabaseConfigured() && (
-                      <div className="bg-slate-950/80 p-2.5 rounded-lg border border-slate-850/60 flex flex-col gap-1.5 text-[10px] font-mono">
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">DATABASE VEHICLES COUNT:</span>
-                          <strong className={`${activeTheme.primaryText}`}>{garage.length} units</strong>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">LAST BACKUP STATUS:</span>
-                          <strong className="text-emerald-400 font-black">{supabaseStatus.toUpperCase()}</strong>
-                        </div>
-                        {supabaseError && (
-                          <div className="text-[9px] text-red-400 border-t border-slate-850/30 pt-1 mt-1 font-sans">
-                            Error response: {supabaseError}
+                        {/* Status Notices */}
+                        {authMessage && (
+                          <div className="p-3 bg-emerald-950/40 border border-emerald-500/20 rounded-xl text-emerald-400 text-[10.5px] leading-relaxed flex items-start gap-2">
+                            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400 mt-0.5" />
+                            <span>{authMessage}</span>
                           </div>
                         )}
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Interactive Checklist Cards */}
-                  <div className="space-y-4">
-                    
-                    {/* Checkpoint 1 */}
-                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans relative overflow-hidden">
-                      <div className="flex items-start gap-3">
-                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">1</span>
-                        <div className="space-y-1">
-                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Create PostgreSQL Table Schema</h4>
-                          <p className="text-[11px] text-slate-400 leading-normal">
-                            Create a postgres schema table to persist scanned vehicle reports. Paste this definition inside the SQL query editor on your <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" className="text-sky-450 hover:underline inline-flex items-center gap-0.5 font-semibold">Supabase Portal <ExternalLink className="h-2.5 w-2.5 inline" /></a>:
+                        {authErrorInput && (
+                          <div className="p-3 bg-red-950/40 border border-red-500/20 rounded-xl text-red-100 text-[10.5px] leading-relaxed flex items-start gap-2 font-mono">
+                            <ShieldAlert className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
+                            <span>{authErrorInput}</span>
+                          </div>
+                        )}
+
+                        {authStep === 'idle' ? (
+                          /* Step 1: Input Email */
+                          <form onSubmit={handleSendOtp} className="space-y-3 pt-1">
+                            <div className="space-y-1.5">
+                              <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Personal Email Address</label>
+                              <div className="relative">
+                                <Mail className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-600" />
+                                <input
+                                  type="email"
+                                  required
+                                  disabled={authLoading}
+                                  placeholder="user@example.com"
+                                  value={authEmail}
+                                  onChange={(e) => setAuthEmail(e.target.value)}
+                                  className="w-full bg-slate-950 border border-slate-850 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-red-500/55 transition font-mono"
+                                />
+                              </div>
+                            </div>
+
+                            <button
+                              type="submit"
+                              disabled={authLoading}
+                              className={`w-full text-xs font-bold font-mono uppercase py-2.5 rounded-lg cursor-pointer flex items-center justify-center gap-2 text-white bg-red-650 hover:bg-red-600 transition`}
+                            >
+                              {authLoading ? (
+                                <>
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  <span>Routing OTP Access Token...</span>
+                                </>
+                              ) : (
+                                "Send Dynamic Access Code (OTP)"
+                              )}
+                            </button>
+                          </form>
+                        ) : (
+                          /* Step 2: Input Verification Code */
+                          <form onSubmit={handleVerifyOtp} className="space-y-3 pt-1">
+                            <div className="space-y-1.5">
+                              <div className="flex justify-between items-center">
+                                <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Enter One-Time PIN / OTP</label>
+                                <span className="text-[9px] text-zinc-400 font-mono">{authEmail}</span>
+                              </div>
+                              <input
+                                type="text"
+                                required
+                                disabled={authLoading}
+                                placeholder="e.g. 123456"
+                                value={authOtpCode}
+                                onChange={(e) => setAuthOtpCode(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-center text-xs text-slate-200 focus:outline-none focus:border-emerald-550/40 transition font-mono tracking-widest font-black"
+                              />
+                            </div>
+
+                            <div className="flex gap-2.5 pt-1">
+                              <button
+                                type="button"
+                                disabled={authLoading}
+                                onClick={() => {
+                                  setAuthStep('idle');
+                                  setAuthOtpCode("");
+                                  setAuthErrorInput(null);
+                                }}
+                                className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-705 text-slate-300 font-bold font-mono uppercase text-[10px] cursor-pointer transition"
+                              >
+                                Back
+                              </button>
+                              
+                              <button
+                                type="submit"
+                                disabled={authLoading}
+                                className={`flex-1 text-xs font-bold font-mono uppercase py-2 rounded-lg cursor-pointer flex items-center justify-center gap-2 text-white bg-emerald-600 hover:bg-emerald-500 transition`}
+                              >
+                                {authLoading ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  "Confirm & Sign In"
+                                )}
+                              </button>
+                            </div>
+                          </form>
+                        )}
+
+                        {/* Divider */}
+                        <div className="relative flex py-2 items-center">
+                          <div className="flex-grow border-t border-slate-850"></div>
+                          <span className="flex-shrink mx-4 text-[9px] font-bold font-mono text-slate-650 uppercase tracking-widest">or connect using</span>
+                          <div className="flex-grow border-t border-slate-850"></div>
+                        </div>
+
+                        {/* Social Media Logins */}
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <button
+                            onClick={() => handleSocialPlatformLogin('google')}
+                            disabled={authLoading}
+                            className="bg-slate-950 border border-slate-850 hover:bg-slate-850 hover:border-slate-800 p-2 rounded-xl text-slate-200 transition text-[11px] font-mono flex items-center justify-center gap-1.5 cursor-pointer font-bold"
+                          >
+                            <svg className="h-3 w-3 inline text-red-500 fill-current" viewBox="0 0 24 24">
+                              <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-6.887 4.114-4.694 0-8.503-3.809-8.503-8.503s3.81-8.502 8.503-8.502c2.203 0 4.114.818 5.614 2.213l2.883-2.882C18.423 1.137 15.54 0 12.24 0 5.58 0 0 5.582 0 12.24s5.58 12.24 12.24 12.24c6.942 0 12.24-4.851 12.24-12.24 0-.741-.082-1.423-.223-1.955H12.24z"/>
+                            </svg>
+                            <span>Google Auth</span>
+                          </button>
+
+                          <button
+                            onClick={() => handleSocialPlatformLogin('github')}
+                            disabled={authLoading}
+                            className="bg-slate-950 border border-slate-850 hover:bg-slate-850 hover:border-slate-800 p-2 rounded-xl text-slate-200 transition text-[11px] font-mono flex items-center justify-center gap-1.5 cursor-pointer font-bold"
+                          >
+                            <svg className="h-3 w-3 inline text-slate-300 fill-current" viewBox="0 0 24 24">
+                              <path fillRule="evenodd" clipRule="evenodd" d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.11.82-.26.82-.577v-2.234c-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.43.372.82 1.102.82 2.222v3.293c0 .319.22.694.825.576C20.565 21.795 24 17.3 24 12c0-6.63-5.37-12-12-12z" />
+                            </svg>
+                            <span>GitHub Auth</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Offline Mode Banner */}
+                      <div className="p-3.5 bg-slate-900/30 rounded-xl border border-slate-850/75 flex items-center gap-3 font-sans">
+                        <User className="h-5 w-5 text-slate-500 shrink-0" />
+                        <div className="space-y-0.5">
+                          <h4 className="text-[10.5px] font-bold text-slate-300 uppercase font-mono">Anonymous Local Mode</h4>
+                          <p className="text-[10px] text-zinc-500 leading-normal">
+                            Scanned vehicles are currently cached in this browser. Log in using email-otp or google/github to unlock multi-device cloud backup and synchronization!
                           </p>
                         </div>
                       </div>
 
-                      <div className="relative font-mono bg-slate-950 border border-slate-850 rounded-lg p-3 text-[10px] overflow-x-auto text-slate-400 max-h-48 leading-relaxed">
-                        <pre className="whitespace-pre">{`-- Create WhipCheck stored vehicles table
+                      {/* Troubleshooting Card */}
+                      <div className="p-4 bg-slate-900/20 rounded-xl border border-slate-850 space-y-3 font-sans">
+                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
+                          <span>💡 Resilient Login Tips</span>
+                        </h4>
+                        <div className="space-y-3 text-[10.5px] leading-relaxed text-zinc-400">
+                          <div>
+                            <p className="font-bold text-slate-300">
+                              Option 1: Paste the Confirmation Link Directly
+                            </p>
+                            <p className="text-slate-500 mt-1">
+                              If clicking the email confirmation link opens an invalid/broken URL, simply <strong>copy that link</strong> from your email and <strong>paste it directly</strong> into the "One-Time PIN" input box above. Our app will automatically extract the security hash and log you in!
+                            </p>
+                          </div>
+                          <div className="border-t border-slate-850/60 pt-3">
+                            <p className="font-bold text-slate-300">
+                              Option 2: Use 6-Digit Numeric Codes
+                            </p>
+                            <p className="text-slate-500 mt-1">
+                              If you prefer numeric codes, go to your <strong>Supabase Dashboard → Auth → Email Templates</strong>. Under "Magic Link", change <code className="bg-black text-red-500 px-1 rounded font-mono">{"{{ .ConfirmationURL }}"}</code> to <code className="bg-black text-emerald-400 px-1 rounded font-mono">{"{{ .Token }}"}</code>. This sends a 6-digit numeric OTP you can copy and paste directly into the box!
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* CASE: USER LOGGED IN - display user metrics card */
+                    <div className="space-y-4 font-sans">
+                      <div className="p-5 bg-gradient-to-br from-slate-900 to-zinc-950 border border-slate-850 rounded-2xl shadow-lg relative overflow-hidden space-y-5">
+                        
+                        {/* Background decor */}
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl pointer-events-none"></div>
+                        
+                        <div className="flex items-center gap-4">
+                          <div className={`p-3 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shrink-0`}>
+                            <User className="h-6 w-6" />
+                          </div>
+                          <div className="space-y-0.5 min-w-0 flex-1">
+                            <span className="text-[9px] font-extrabold font-mono tracking-widest text-emerald-400 uppercase">Registered Session</span>
+                            <h4 className="text-xs font-bold text-slate-200 truncate">{currentUser.email}</h4>
+                            <p className="text-[9.5px] text-zinc-500 font-mono uppercase truncate">
+                              ID: {currentUser.id.slice(0, 18)}...
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Database Status log details */}
+                        <div className="bg-slate-950 p-3 rounded-xl border border-slate-850/60 flex flex-col gap-2 text-[10.5px] font-mono leading-relaxed">
+                          <div className="flex justify-between items-center pb-2 border-b border-slate-900">
+                            <span className="text-slate-500 text-[10px] uppercase">My Personal Garage Scans:</span>
+                            <strong className={`${activeTheme.primaryText} font-extrabold text-xs`}>{garage.length} units</strong>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-500 text-[10px] uppercase">Transmission Engine:</span>
+                            <span className="text-emerald-400 font-bold uppercase text-[10px]">Cloud Active // User-bound</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-500 text-[10px] uppercase">Last Sync Status:</span>
+                            <span className="text-emerald-400 font-black tracking-widest text-[10px] uppercase">{supabaseStatus}</span>
+                          </div>
+                        </div>
+
+                        {/* Interactive operations row */}
+                        <div className="flex flex-col gap-2.5 pt-1">
+                          <button
+                            onClick={() => syncUserGarage(currentUser)}
+                            disabled={isSupabaseSyncing}
+                            className={`w-full bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700/60 font-mono font-bold uppercase text-xs py-2 rounded-xl transition cursor-pointer flex items-center justify-center gap-2`}
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${isSupabaseSyncing ? "animate-spin" : ""}`} />
+                            <span>{isSupabaseSyncing ? "Force Syncing database..." : "Force Cloud Sync"}</span>
+                          </button>
+
+                          <button
+                            onClick={handleUserLogout}
+                            disabled={authLoading}
+                            className={`w-full bg-red-950/20 hover:bg-red-950/40 text-red-400 border border-red-900/40 font-mono font-bold uppercase text-xs py-2 rounded-xl transition cursor-pointer flex items-center justify-center gap-2`}
+                          >
+                            <LogOut className="h-3.5 w-3.5" />
+                            <span>Sign Out of Personal Account</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* SQL Schema Guideline Dropdown for administrators/developers configuring databases */}
+                      <details className="p-4 rounded-xl border border-slate-850 bg-slate-900/10 font-sans group cursor-pointer transition-all">
+                        <summary className="flex items-center justify-between text-xs font-bold font-mono uppercase tracking-wide text-slate-400 select-none">
+                          <span>🔧 Developer Schema Blueprint (RLS)</span>
+                          <span className="text-[10px] text-slate-500 group-open:rotate-180 transition">&darr;</span>
+                        </summary>
+                        
+                        <div className="space-y-3 pt-3 text-[11px] leading-relaxed text-slate-450 cursor-default">
+                          <p>
+                            To allow multi-user accounts where each user has their own private garage, apply this schema table definition on your <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" className="text-sky-450 hover:underline inline-flex items-center gap-0.5 font-semibold">Supabase Portal <ExternalLink className="h-2.5 w-2.5 inline" /></a> SQL Editor:
+                          </p>
+
+                          <div className="relative font-mono bg-slate-950 border border-slate-850 rounded-lg p-3 text-[10px] overflow-x-auto text-slate-400 max-h-48 leading-relaxed">
+                            <pre className="whitespace-pre">{`-- Create WhipCheck saved vehicles table
 create table public.vehicles (
   id text primary key,
   timestamp text not null,
@@ -1537,135 +1826,112 @@ create table public.vehicles (
   trivia jsonb,
   tips jsonb,
   specs jsonb,
+  user_id uuid default auth.uid() references auth.users(id) on delete cascade,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 -- Enable Row Level Security (RLS)
 alter table public.vehicles enable row level security;
 
--- Create policy to allow public access
-create policy "Allow public access to vehicles" 
-  on public.vehicles for all using (true) with check (true);`}</pre>
+-- Create policy to allow users to manage their own vehicles
+create policy "Users can manage their own vehicles" 
+  on public.vehicles 
+  for all 
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);`}</pre>
+                            <button
+                              onClick={handleCopySql}
+                              className="absolute top-2 right-2 bg-slate-900/95 border border-slate-800 hover:bg-slate-800 text-slate-300 font-semibold px-2 py-1 rounded text-[9px] cursor-pointer flex items-center gap-1 transition-all"
+                            >
+                              {copiedSql ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                              {copiedSql ? "Copied!" : "Copy SQL"}
+                            </button>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ADMIN CONFIGURATION GATEWAY (Collapsible Operator console) */}
+              <div className="border-t border-slate-850/85 pt-6 mt-4">
+                {!isAdminLoggedIn ? (
+                  /* Admin portal entrance toggle */
+                  <div className="text-center">
+                    <button
+                      onClick={() => setIsAdminLoggedIn(true)}
+                      className="text-[10px] font-mono uppercase tracking-wider text-slate-600 hover:text-slate-400 font-bold transition flex items-center gap-1 mx-auto cursor-pointer"
+                    >
+                      <span>⚙️ System Administrator Dashboard Portal</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-4 bg-slate-950 rounded-2xl border border-red-500/10 space-y-4 font-sans relative">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="h-4 w-4 text-red-400 shrink-0" />
+                        <span className="text-[11px] font-black uppercase tracking-wider font-mono text-slate-200">Authorized Operator Config Portal</span>
+                      </div>
+                      <button
+                        onClick={handleAdminLogout}
+                        className="text-[9px] uppercase font-mono tracking-widest font-black text-red-400 hover:text-red-300 bg-red-950/15 px-2 py-0.5 rounded border border-red-900/20 cursor-pointer transition"
+                      >
+                        Lock Portal
+                      </button>
+                    </div>
+
+                    <p className="text-[10.5px] text-slate-500 leading-normal">
+                      Operator bypass console: override Supabase endpoint details at runtime. These parameters take immediate effect across all authentication routines.
+                    </p>
+
+                    <div className="space-y-3 pt-1">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Project API URL</label>
+                        <input
+                          type="text"
+                          value={customSupabaseUrl}
+                          onChange={(e) => setCustomSupabaseUrl(e.target.value)}
+                          placeholder="https://your-project.supabase.co"
+                          className="w-full bg-slate-900 border border-slate-850 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono tracking-wide focus:outline-none focus:border-red-500/55"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Service / Anon API Key</label>
+                        <input
+                          type="text"
+                          value={customSupabaseAnonKey}
+                          onChange={(e) => setCustomSupabaseAnonKey(e.target.value)}
+                          placeholder="eyJhbGciOi..."
+                          className="w-full bg-slate-900 border border-slate-850 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-red-500/55"
+                        />
+                      </div>
+
+                      <div className="flex gap-2.5 pt-1">
                         <button
-                          onClick={handleCopySql}
-                          className="absolute top-2 right-2 bg-slate-900/95 border border-slate-800 hover:bg-slate-800 text-slate-300 font-semibold px-2 py-1 rounded text-[9px] cursor-pointer flex items-center gap-1 transition-all"
+                          onClick={handleSaveParameters}
+                          className="flex-1 bg-red-650 hover:bg-red-600 text-white font-bold font-mono uppercase text-[10px] py-1.5 rounded-lg transition cursor-pointer"
                         >
-                          {copiedSql ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                          {copiedSql ? "Copied!" : "Copy SQL"}
+                          Apply Overrides
+                        </button>
+                        <button
+                          onClick={handleResetParameters}
+                          className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold font-mono uppercase text-[10px] py-1.5 rounded-lg transition cursor-pointer"
+                        >
+                          Reset
                         </button>
                       </div>
-                    </div>
-
-                    {/* Checkpoint 2 */}
-                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans">
-                      <div className="flex items-start gap-3">
-                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">2</span>
-                        <div className="space-y-1 flex-1">
-                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Environment Configuration Keys</h4>
-                          <p className="text-[11px] text-slate-400 leading-normal">
-                            Introduce these environment variables inside your cloud host (Vercel, Render, or Google Cloud Run) to initialize connection:
-                          </p>
-                          
-                          <div className="mt-3 space-y-2 text-[10px] font-mono">
-                            <div className="p-2 bg-slate-950 border border-slate-850 rounded flex justify-between items-center">
-                              <div>
-                                <span className="text-slate-500 font-semibold block uppercase">VITE_SUPABASE_URL</span>
-                                <span className="text-slate-300 truncate block mt-0.5 max-w-[170px] sm:max-w-xs">{getActiveSupabaseConfig().url || "Pending configuration..."}</span>
-                              </div>
-                              <span className={`px-1.5 py-0.5 rounded text-[8px] tracking-wider uppercase font-extrabold ${getActiveSupabaseConfig().url ? "bg-emerald-500/10 text-emerald-400 font-black border border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border border-amber-500/20"}`}>
-                                {getActiveSupabaseConfig().url ? "Active" : "Missing"}
-                              </span>
-                            </div>
-                            
-                            <div className="p-2 bg-slate-950 border border-slate-850 rounded flex justify-between items-center">
-                              <div>
-                                <span className="text-slate-500 font-semibold block uppercase">VITE_SUPABASE_ANON_KEY</span>
-                                <span className="text-slate-300 truncate block mt-0.5 max-w-[180px] sm:max-w-xs">{getActiveSupabaseConfig().anonKey ? "••••••••••••••••••••••••" : "Pending configuration..."}</span>
-                              </div>
-                              <span className={`px-1.5 py-0.5 rounded text-[8px] tracking-wider uppercase font-extrabold ${getActiveSupabaseConfig().anonKey ? "bg-emerald-500/10 text-emerald-400 font-black border border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border border-amber-500/20"}`}>
-                                {getActiveSupabaseConfig().anonKey ? "Active" : "Missing"}
-                              </span>
-                            </div>
-                          </div>
+                      
+                      {paramFeedback && (
+                        <div className="text-[9.5px] p-2 bg-emerald-990/35 border border-emerald-500/20 text-emerald-400 rounded text-center font-sans font-medium">
+                          {paramFeedback}
                         </div>
-                      </div>
+                      )}
                     </div>
-
-                    {/* Checkpoint 3 */}
-                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans">
-                      <div className="flex items-start gap-3">
-                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">3</span>
-                        <div className="space-y-1 flex-1">
-                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Migrate Browser Local Cache</h4>
-                          <p className="text-[11px] text-slate-400 leading-normal">
-                            Securely upload your current browser garage items (representing {garage.length} vehicle models) straight to your cloud PostgreSQL database in a single click:
-                          </p>
-
-                          <div className="mt-3 p-3 bg-slate-950 border border-slate-850 rounded-lg space-y-2 text-center">
-                            <button
-                              onClick={handleManualSync}
-                              disabled={!isSupabaseConfigured() || isSupabaseSyncing || garage.length === 0}
-                              className={`w-full text-xs font-bold font-mono uppercase px-4 py-2 rounded-lg cursor-pointer transition text-slate-950 ${
-                                isSupabaseConfigured() && garage.length > 0
-                                  ? `${activeTheme.accentBg} ${activeTheme.accentHover}`
-                                  : "bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-850"
-                              }`}
-                            >
-                              {isSupabaseSyncing ? "Uploading data blocks..." : "Push Local Database to Supabase Cloud"}
-                            </button>
-                            
-                            {/* Display Sync Progress log */}
-                            {syncProgress && (
-                              <div className="text-[9px] text-zinc-300 leading-normal p-2 bg-slate-900/80 rounded border border-slate-850 font-sans text-left mt-1.5 shadow-sm">
-                                <span className={`block font-semibold uppercase text-[8px] font-mono mb-0.5 ${activeTheme.primaryText}`}>Sync log output:</span>
-                                {syncProgress}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Checkpoint 4 */}
-                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans">
-                      <div className="flex items-start gap-3">
-                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">4</span>
-                        <div className="space-y-1 flex-1">
-                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Deploy Frontend & Backend to Vercel</h4>
-                          <p className="text-[11px] text-slate-400 leading-normal">
-                            WhipCheck is completely serverless friendly! The React Vite application compiles to high-performance static pages while the backend uses a secure Serverless routing map.
-                          </p>
-
-                          <div className="mt-3 p-3 bg-slate-950 border border-slate-850 rounded-lg space-y-2">
-                            <div className="flex items-center justify-between text-[10px] font-mono">
-                              <span className="text-slate-500 font-bold block">VERCEL CONFIGURATION FILE:</span>
-                              <span className="px-1.5 py-0.5 rounded bg-zinc-850 text-zinc-300 block font-semibold text-[9px] font-mono">vercel.json</span>
-                            </div>
-                            <p className="text-[10px] text-zinc-400 leading-normal font-sans">
-                              A production config file (<code className="font-mono text-amber-400">vercel.json</code>) has been successfully created in the root of your project workspace. This directs Vercel to route endpoint calls to your serverless endpoint.
-                            </p>
-                          </div>
-
-                          <div className="mt-3 space-y-2 text-[11px] leading-relaxed">
-                            <p className="font-bold text-slate-200 font-mono text-xs uppercase">Deploying in 2 Simple Clicks:</p>
-                            <ol className="list-decimal pl-4 space-y-1 text-slate-400">
-                              <li>Create a new site at <a href="https://vercel.com" target="_blank" rel="noopener noreferrer" className="text-sky-450 hover:underline font-semibold inline-flex items-center gap-0.5">Vercel Console <ExternalLink className="h-2.5 w-2.5 inline" /></a> and connect your GitHub repo.</li>
-                              <li>Add your environment parameters in the Vercel Settings:
-                                <ul className="list-disc pl-4 mt-1 font-mono text-[10.5px] text-zinc-400">
-                                  <li><code className="text-amber-400">GEMINI_API_KEY</code> = (From Google AI Studio)</li>
-                                  <li><code className="text-sky-400">VITE_SUPABASE_URL</code> = (From Supabase API)</li>
-                                  <li><code className="text-sky-400">VITE_SUPABASE_ANON_KEY</code> = (From Supabase API)</li>
-                                </ul>
-                              </li>
-                            </ol>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
                   </div>
-                </>
-              )}
+                )}
+              </div>
             </div>
           )}
 
@@ -1717,15 +1983,15 @@ create policy "Allow public access to vehicles"
               <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Garage</span>
             </button>
 
-            {/* Nav item 4 (Cloud Integration & Deploy) */}
+            {/* Nav item 4 (Account) */}
             <button
-              onClick={() => { setActiveTab('migration'); setSelectedGarageCar(null); }}
-              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'migration' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
+              onClick={() => { setActiveTab('account'); setSelectedGarageCar(null); }}
+              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'account' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
             >
-              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'migration' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
-                <Server className="h-4 w-4" />
+              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'account' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
+                <User className="h-4 w-4" />
               </div>
-              <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Deploy</span>
+              <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Account</span>
             </button>
 
           </div>
