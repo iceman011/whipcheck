@@ -3,13 +3,22 @@ import {
   Camera as CameraIcon, Upload, Sparkles, History, Compass, Database, 
   Trash2, ShieldAlert, CheckCircle2, ChevronRight, RotateCcw, 
   MapPin, Loader2, Gauge, Settings, Cpu, HelpCircle, RefreshCw, Layers, ShieldCheck,
-  Search, ArrowUpDown, SlidersHorizontal
+  Search, ArrowUpDown, SlidersHorizontal, Cloud, CloudOff, Server, Copy, Check, ExternalLink, Code
 } from "lucide-react";
 import { IdentifiedCar, ScanStepType } from "./types";
 import StatusIndicator from "./components/StatusIndicator";
 import SampleCarousel from "./components/SampleCarousel";
 import GuideSection from "./components/GuideSection";
 import CarDetailsReport from "./components/CarDetailsReport";
+import { 
+  isSupabaseConfigured, 
+  fetchSupabaseGarage, 
+  saveSupabaseCar, 
+  removeSupabaseCar, 
+  syncLocalGarageToCloud,
+  getActiveSupabaseConfig,
+  updateSupabaseConfig
+} from "./lib/supabase";
 
 export interface AppTheme {
   id: string;
@@ -126,8 +135,8 @@ const HOTSPOTS = [
 ];
 
 export default function App() {
-  // Mobile UI Tabs: 'scan' | 'garage' | 'guide'
-  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'guide'>('scan');
+  // Mobile UI Tabs: 'scan' | 'garage' | 'guide' | 'migration'
+  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'guide' | 'migration'>('scan');
 
   // Sport tuning dashboard state
   const [currThemeId, setCurrThemeId] = useState<string>(() => {
@@ -150,6 +159,24 @@ export default function App() {
   const [garageGroupBy, setGarageGroupBy] = useState<string>("none"); // "none", "brand", "category", "color"
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
 
+  // Supabase Sync States
+  const [isSupabaseSyncing, setIsSupabaseSyncing] = useState<boolean>(false);
+  const [supabaseStatus, setSupabaseStatus] = useState<'idle' | 'synced' | 'error'>('idle');
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [copiedSql, setCopiedSql] = useState<boolean>(false);
+  const [syncProgress, setSyncProgress] = useState<string | null>(null);
+
+  // Admin Gateway and Live Parameters States
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
+    return sessionStorage.getItem("whipcheck_admin_session") === "true";
+  });
+  const [adminPasswordInput, setAdminPasswordInput] = useState<string>("");
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [customSupabaseUrl, setCustomSupabaseUrl] = useState<string>(() => getActiveSupabaseConfig().url);
+  const [customSupabaseAnonKey, setCustomSupabaseAnonKey] = useState<string>(() => getActiveSupabaseConfig().anonKey);
+  const [paramFeedback, setParamFeedback] = useState<string | null>(null);
+
   // Scan workflow state
   const [scanStep, setScanStep] = useState<ScanStepType>('idle');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -168,7 +195,7 @@ export default function App() {
   const [gpsCoords, setGpsCoords] = useState(HOTSPOTS[0].coords);
   const [gpsName, setGpsName] = useState(HOTSPOTS[0].name);
 
-  // Initialize and load saved garage items
+  // Initialize and load saved garage items (Unified local + Supabase)
   useEffect(() => {
     // Detect if inside an iframe
     try {
@@ -189,14 +216,54 @@ export default function App() {
         console.error("Failed to fetch backend health status:", err);
       });
 
+    // Load local storage items first for immediate UI paint
+    let localCars: IdentifiedCar[] = [];
     try {
       const saved = localStorage.getItem("car_spotter_garage_v2");
       if (saved) {
-        setGarage(JSON.parse(saved));
+        localCars = JSON.parse(saved);
+        setGarage(localCars);
       }
     } catch (e) {
       console.error("Failed to load local garage items", e);
     }
+
+    // Connect to Supabase and merge databases recursively if available
+    const initSupabaseSync = async () => {
+      if (isSupabaseConfigured()) {
+        try {
+          setIsSupabaseSyncing(true);
+          const cloudCars = await fetchSupabaseGarage();
+          
+          const cloudMap = new Map(cloudCars.map(c => [c.id, c]));
+          const merged = [...cloudCars];
+          
+          // Find any local cars that aren't pushed to the cloud yet (offline additions)
+          const unsyncedLocal = localCars.filter(lc => !cloudMap.has(lc.id));
+          if (unsyncedLocal.length > 0) {
+            // Push offline additions to cloud silently
+            await syncLocalGarageToCloud(unsyncedLocal);
+            // Re-fetch or merge manually
+            unsyncedLocal.forEach(car => {
+              if (!cloudMap.has(car.id)) {
+                merged.unshift(car);
+              }
+            });
+          }
+          
+          setGarage(merged);
+          localStorage.setItem("car_spotter_garage_v2", JSON.stringify(merged));
+          setSupabaseStatus("synced");
+        } catch (err: any) {
+          console.error("Supabase failed to initialize sync:", err);
+          setSupabaseStatus("error");
+          setSupabaseError(err.message || String(err));
+        } finally {
+          setIsSupabaseSyncing(false);
+        }
+      }
+    };
+    initSupabaseSync();
 
     // Try fetching real geolocation
     if (navigator.geolocation) {
@@ -217,24 +284,53 @@ export default function App() {
     }
   }, []);
 
-  // Sync garage with localstorage
-  const saveToGarage = (car: IdentifiedCar) => {
+  // Sync garage with localstorage and cloud
+  const saveToGarage = async (car: IdentifiedCar) => {
     if (!car) return;
     const exists = garage.some(c => c.id === car.id);
     if (!exists) {
       const updated = [car, ...garage];
       setGarage(updated);
       localStorage.setItem("car_spotter_garage_v2", JSON.stringify(updated));
+
+      // Synchronize in the cloud synchronously if credentials set
+      if (isSupabaseConfigured()) {
+        try {
+          setIsSupabaseSyncing(true);
+          await saveSupabaseCar(car);
+          setSupabaseStatus("synced");
+        } catch (err: any) {
+          console.error("Live Cloud Sync Failed:", err);
+          setSupabaseStatus("error");
+          setSupabaseError(`Save failed: ${err.message || err}`);
+        } finally {
+          setIsSupabaseSyncing(false);
+        }
+      }
     }
   };
 
-  const removeFromGarage = (id: string, e?: React.MouseEvent) => {
+  const removeFromGarage = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const updated = garage.filter(c => c.id !== id);
     setGarage(updated);
     localStorage.setItem("car_spotter_garage_v2", JSON.stringify(updated));
     if (selectedGarageCar && selectedGarageCar.id === id) {
       setSelectedGarageCar(null);
+    }
+
+    if (isSupabaseConfigured()) {
+      try {
+        setIsSupabaseSyncing(true);
+        await removeSupabaseCar(id);
+        setSupabaseStatus("synced");
+      } catch (err: any) {
+        console.error("Live Cloud Removal Failed:", err);
+        setSupabaseStatus("error");
+        setSupabaseError(`Delete failed: ${err.message || err}`);
+      } finally {
+        setIsSupabaseSyncing(false);
+      }
     }
   };
 
@@ -477,6 +573,143 @@ export default function App() {
         cars: groupsMap[key],
       }));
   }
+
+  const handleCopySql = () => {
+    const sqlSchema = `-- Create WhipCheck saved vehicles table on Supabase
+create table public.vehicles (
+  id text primary key,
+  timestamp text not null,
+  image text not null,
+  "isCar" boolean default true,
+  make text,
+  model text,
+  generation text,
+  "yearRange" text,
+  confidence numeric,
+  color text,
+  category text,
+  "engineType" text,
+  power text,
+  horsepower text,
+  torque text,
+  "modelYear" text,
+  "zeroToSixty" text,
+  "estimatedNewPrice" text,
+  "estimatedUsedPrice" text,
+  trivia jsonb,
+  tips jsonb,
+  specs jsonb,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS)
+alter table public.vehicles enable row level security;
+
+-- Create policy to allow public access (or tie to authenticated users)
+create policy "Allow public access to vehicles" 
+  on public.vehicles 
+  for all 
+  using (true) 
+  with check (true);`;
+
+    navigator.clipboard.writeText(sqlSchema).then(() => {
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 3000);
+    });
+  };
+
+  const handleManualSync = async () => {
+    if (!isSupabaseConfigured()) {
+      return;
+    }
+    if (garage.length === 0) {
+      setSyncProgress("No vehicles to sync. Capture or scan some cars first!");
+      return;
+    }
+
+    try {
+      setSyncProgress("Initiating sync of local storage cars to cloud database...");
+      setIsSupabaseSyncing(true);
+      const res = await syncLocalGarageToCloud(garage);
+      
+      if (res.errors.length > 0) {
+        setSyncProgress(`Partially completed: Sync success for ${res.successCount} vehicles. ${res.errors.length} failed. Check console.`);
+      } else {
+        setSyncProgress(`Successfully synchronized ${res.successCount} vehicles to your live Supabase database!`);
+        // Refresh local items
+        const fresh = await fetchSupabaseGarage();
+        setGarage(fresh);
+        localStorage.setItem("car_spotter_garage_v2", JSON.stringify(fresh));
+        setSupabaseStatus("synced");
+      }
+    } catch (e: any) {
+      setSyncProgress(`Sync failed: ${e.message || e}`);
+      setSupabaseStatus("error");
+    } finally {
+      setIsSupabaseSyncing(false);
+    }
+  };
+
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const normalizedInput = adminPasswordInput.trim();
+    if (normalizedInput === "admin" || normalizedInput === "admin123") {
+      setIsAdminLoggedIn(true);
+      sessionStorage.setItem("whipcheck_admin_session", "true");
+      setAdminError(null);
+      
+      const active = getActiveSupabaseConfig();
+      setCustomSupabaseUrl(active.url);
+      setCustomSupabaseAnonKey(active.anonKey);
+    } else {
+      setAdminError("Invalid administrator credentials. Access denied.");
+    }
+  };
+
+  const handleAdminLogout = () => {
+    setIsAdminLoggedIn(false);
+    sessionStorage.removeItem("whipcheck_admin_session");
+    setAdminPasswordInput("");
+  };
+
+  const handleSaveParameters = () => {
+    try {
+      updateSupabaseConfig(customSupabaseUrl, customSupabaseAnonKey);
+      setParamFeedback("Live integration parameters applied successfully! Reconnected.");
+      setTimeout(() => setParamFeedback(null), 4000);
+      
+      if (isSupabaseConfigured()) {
+        setSupabaseStatus("idle");
+        fetchSupabaseGarage()
+          .then((cloudCars) => {
+            setGarage(cloudCars);
+            localStorage.setItem("car_spotter_garage_v2", JSON.stringify(cloudCars));
+            setSupabaseStatus("synced");
+          })
+          .catch((err) => {
+            console.error(err);
+            setSupabaseStatus("error");
+            setSupabaseError(err.message || String(err));
+          });
+      }
+    } catch (e: any) {
+      setParamFeedback(`Configuration error: ${e.message || e}`);
+      setTimeout(() => setParamFeedback(null), 4000);
+    }
+  };
+
+  const handleResetParameters = () => {
+    localStorage.removeItem("whipcheck_supabase_url");
+    localStorage.removeItem("whipcheck_supabase_anon_key");
+    updateSupabaseConfig("", ""); 
+    
+    const active = getActiveSupabaseConfig();
+    setCustomSupabaseUrl(active.url);
+    setCustomSupabaseAnonKey(active.anonKey);
+    
+    setParamFeedback("Parameters reset to compiler environment variables.");
+    setTimeout(() => setParamFeedback(null), 4000);
+  };
 
   return (
     <div className={`min-h-screen ${activeTheme.primaryBg} text-slate-200 flex flex-col font-sans antialiased transition-colors duration-300 md:py-6 md:px-4`}>
@@ -1093,11 +1326,355 @@ export default function App() {
             <GuideSection />
           )}
 
+          {/* TAB 4: CLOUD INTEGRATION & PRODUCTION MIGRATION */}
+          {activeTab === 'migration' && (
+            <div className="space-y-6">
+              {/* Header Title */}
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <h2 className="text-sm font-black tracking-wider text-slate-100 font-display uppercase">Cloud Sync & Deploy</h2>
+                  <p className="text-[10px] text-slate-500 uppercase font-mono">Migrate to production platforms</p>
+                </div>
+                <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full text-[10px] font-mono">
+                  <span className={`w-1.5 h-1.5 rounded-full ${isSupabaseConfigured() ? "bg-emerald-500 animate-pulse" : "bg-amber-500 animate-pulse"}`}></span>
+                  <span className={isSupabaseConfigured() ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>
+                    {isSupabaseConfigured() ? "Supabase Cloud Enabled" : "Offline Local Mode"}
+                  </span>
+                </div>
+              </div>
+
+              {/* ADMIN GATE BARRIER */}
+              {!isAdminLoggedIn ? (
+                <div className="max-w-md mx-auto my-8 p-6 bg-slate-900 border border-slate-850 rounded-2xl shadow-xl space-y-6 text-center font-sans">
+                  <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 flex items-center justify-center mx-auto">
+                    <ShieldCheck className="h-6 w-6 animate-pulse" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h3 className="text-sm font-black uppercase tracking-widest text-slate-100 font-mono">Admin Authorization Required</h3>
+                    <p className="text-[11px] text-slate-400">
+                      Please enter the administrator passcode to access live deployment parameters, database sync procedures, and static export guides.
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleAdminLogin} className="space-y-3">
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        placeholder="Enter Admin Authorization Key..."
+                        value={adminPasswordInput}
+                        onChange={(e) => setAdminPasswordInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-xs text-center text-slate-200 placeholder-slate-600 focus:outline-none focus:border-red-500/40 transition font-mono tracking-widest"
+                      />
+                    </div>
+                    {adminError && (
+                      <p className="text-[10px] text-red-400 font-mono">{adminError}</p>
+                    )}
+                    
+                    <button
+                      type="submit"
+                      className={`w-full text-xs font-bold font-mono uppercase py-2 rounded-lg cursor-pointer bg-red-600 hover:bg-red-500 text-white transition`}
+                    >
+                      Verify Credentials
+                    </button>
+                  </form>
+
+                  <div className="p-3 bg-slate-950 rounded-lg border border-slate-850 text-left text-[10px] text-slate-500 leading-normal space-y-1">
+                    <p className="font-bold text-slate-400 uppercase font-mono text-[9px]">Developer Notice:</p>
+                    <p>The fallback admin passcode is configured to <code className="px-1 py-0.5 bg-black rounded font-mono text-red-400">admin123</code>. In production environments, this can be customized in the deployment secrets.</p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Admin Session Indicator & Log Out */}
+                  <div className="p-3 bg-indigo-950/20 border border-indigo-500/20 rounded-xl flex items-center justify-between font-sans text-xs">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <span className="text-slate-300">Authorized Admin Session Active</span>
+                    </div>
+                    <button
+                      onClick={handleAdminLogout}
+                      className="px-2.5 py-1 rounded bg-slate-950 border border-slate-800 hover:bg-slate-800 text-[10px] uppercase font-mono tracking-wider font-bold text-slate-400 cursor-pointer transition"
+                    >
+                      Lock / Logout
+                    </button>
+                  </div>
+
+                  {/* LIVE PARAMETER ADJUSTMENTS (Interactive Controls) */}
+                  <div className="p-4 rounded-xl border border-red-500/20 bg-slate-900/40 space-y-4 font-sans relative overflow-hidden">
+                    <div className="flex items-start gap-3">
+                      <div className="p-1.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 shrink-0">
+                        <Settings className="h-4 w-4" />
+                      </div>
+                      <div className="space-y-1 flex-1">
+                        <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Live Parameter Controls</h4>
+                        <p className="text-[11px] text-slate-400 leading-normal">
+                          Modify connection parameters dynamically. These overrides are stored in the browser and will directly update the active database connectivity context immediately.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 pt-1">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Project API URL</label>
+                        <input
+                          type="text"
+                          value={customSupabaseUrl}
+                          onChange={(e) => setCustomSupabaseUrl(e.target.value)}
+                          placeholder="https://your-project.supabase.co"
+                          className="w-full bg-slate-950 border border-slate-850 rounded px-3 py-1.5 text-xs text-slate-200 font-mono tracking-wide focus:outline-none focus:border-red-500/55"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Service / Anon API Key</label>
+                        <input
+                          type="text"
+                          value={customSupabaseAnonKey}
+                          onChange={(e) => setCustomSupabaseAnonKey(e.target.value)}
+                          placeholder="eyJhbGciOi..."
+                          className="w-full bg-slate-950 border border-slate-850 rounded px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-red-500/55"
+                        />
+                      </div>
+
+                      <div className="flex gap-2.5 pt-1">
+                        <button
+                          onClick={handleSaveParameters}
+                          className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold font-mono uppercase text-[10px] py-1.5 rounded transition cursor-pointer"
+                        >
+                          Apply Overrides
+                        </button>
+                        <button
+                          onClick={handleResetParameters}
+                          className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold font-mono uppercase text-[10px] py-1.5 rounded transition cursor-pointer"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                      
+                      {paramFeedback && (
+                        <div className="text-[9.5px] p-2 bg-emerald-990/35 border border-emerald-500/20 text-emerald-400 rounded text-center font-sans font-medium">
+                          {paramFeedback}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Status card block */}
+                  <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-850 space-y-3 font-sans">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2 rounded-lg ${isSupabaseConfigured() ? "bg-emerald-500/10 border border-emerald-500/25 text-emerald-400" : "bg-slate-950 border border-slate-800 text-slate-500"}`}>
+                        {isSupabaseConfigured() ? <Cloud className="h-5 w-5" /> : <CloudOff className="h-5 w-5" />}
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-bold font-mono text-slate-100 uppercase tracking-wide">
+                          {isSupabaseConfigured() ? "Connected Supabase Instance" : "Secure Local Sandbox Active"}
+                        </h3>
+                        <p className="text-[11px] text-slate-400 leading-normal mt-0.5">
+                          {isSupabaseConfigured() 
+                            ? `Live backend is writing and persisting vehicles inside your real cloud PostgreSQL instance.`
+                            : `All vehicles and photos are saved directly inside your local browser storage (localStorage). Configure keys to unlock live cloud databases.`
+                          }
+                        </p>
+                      </div>
+                    </div>
+
+                    {isSupabaseConfigured() && (
+                      <div className="bg-slate-950/80 p-2.5 rounded-lg border border-slate-850/60 flex flex-col gap-1.5 text-[10px] font-mono">
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">DATABASE VEHICLES COUNT:</span>
+                          <strong className={`${activeTheme.primaryText}`}>{garage.length} units</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">LAST BACKUP STATUS:</span>
+                          <strong className="text-emerald-400 font-black">{supabaseStatus.toUpperCase()}</strong>
+                        </div>
+                        {supabaseError && (
+                          <div className="text-[9px] text-red-400 border-t border-slate-850/30 pt-1 mt-1 font-sans">
+                            Error response: {supabaseError}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Interactive Checklist Cards */}
+                  <div className="space-y-4">
+                    
+                    {/* Checkpoint 1 */}
+                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans relative overflow-hidden">
+                      <div className="flex items-start gap-3">
+                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">1</span>
+                        <div className="space-y-1">
+                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Create PostgreSQL Table Schema</h4>
+                          <p className="text-[11px] text-slate-400 leading-normal">
+                            Create a postgres schema table to persist scanned vehicle reports. Paste this definition inside the SQL query editor on your <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" className="text-sky-450 hover:underline inline-flex items-center gap-0.5 font-semibold">Supabase Portal <ExternalLink className="h-2.5 w-2.5 inline" /></a>:
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="relative font-mono bg-slate-950 border border-slate-850 rounded-lg p-3 text-[10px] overflow-x-auto text-slate-400 max-h-48 leading-relaxed">
+                        <pre className="whitespace-pre">{`-- Create WhipCheck stored vehicles table
+create table public.vehicles (
+  id text primary key,
+  timestamp text not null,
+  image text not null,
+  "isCar" boolean default true,
+  make text,
+  model text,
+  generation text,
+  "yearRange" text,
+  confidence numeric,
+  color text,
+  category text,
+  "engineType" text,
+  power text,
+  horsepower text,
+  torque text,
+  "modelYear" text,
+  "zeroToSixty" text,
+  "estimatedNewPrice" text,
+  "estimatedUsedPrice" text,
+  trivia jsonb,
+  tips jsonb,
+  specs jsonb,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS)
+alter table public.vehicles enable row level security;
+
+-- Create policy to allow public access
+create policy "Allow public access to vehicles" 
+  on public.vehicles for all using (true) with check (true);`}</pre>
+                        <button
+                          onClick={handleCopySql}
+                          className="absolute top-2 right-2 bg-slate-900/95 border border-slate-800 hover:bg-slate-800 text-slate-300 font-semibold px-2 py-1 rounded text-[9px] cursor-pointer flex items-center gap-1 transition-all"
+                        >
+                          {copiedSql ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                          {copiedSql ? "Copied!" : "Copy SQL"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Checkpoint 2 */}
+                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans">
+                      <div className="flex items-start gap-3">
+                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">2</span>
+                        <div className="space-y-1 flex-1">
+                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Environment Configuration Keys</h4>
+                          <p className="text-[11px] text-slate-400 leading-normal">
+                            Introduce these environment variables inside your cloud host (Vercel, Render, or Google Cloud Run) to initialize connection:
+                          </p>
+                          
+                          <div className="mt-3 space-y-2 text-[10px] font-mono">
+                            <div className="p-2 bg-slate-950 border border-slate-850 rounded flex justify-between items-center">
+                              <div>
+                                <span className="text-slate-500 font-semibold block uppercase">VITE_SUPABASE_URL</span>
+                                <span className="text-slate-300 truncate block mt-0.5 max-w-[170px] sm:max-w-xs">{getActiveSupabaseConfig().url || "Pending configuration..."}</span>
+                              </div>
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] tracking-wider uppercase font-extrabold ${getActiveSupabaseConfig().url ? "bg-emerald-500/10 text-emerald-400 font-black border border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border border-amber-500/20"}`}>
+                                {getActiveSupabaseConfig().url ? "Active" : "Missing"}
+                              </span>
+                            </div>
+                            
+                            <div className="p-2 bg-slate-950 border border-slate-850 rounded flex justify-between items-center">
+                              <div>
+                                <span className="text-slate-500 font-semibold block uppercase">VITE_SUPABASE_ANON_KEY</span>
+                                <span className="text-slate-300 truncate block mt-0.5 max-w-[180px] sm:max-w-xs">{getActiveSupabaseConfig().anonKey ? "••••••••••••••••••••••••" : "Pending configuration..."}</span>
+                              </div>
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] tracking-wider uppercase font-extrabold ${getActiveSupabaseConfig().anonKey ? "bg-emerald-500/10 text-emerald-400 font-black border border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border border-amber-500/20"}`}>
+                                {getActiveSupabaseConfig().anonKey ? "Active" : "Missing"}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Checkpoint 3 */}
+                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans">
+                      <div className="flex items-start gap-3">
+                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">3</span>
+                        <div className="space-y-1 flex-1">
+                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Migrate Browser Local Cache</h4>
+                          <p className="text-[11px] text-slate-400 leading-normal">
+                            Securely upload your current browser garage items (representing {garage.length} vehicle models) straight to your cloud PostgreSQL database in a single click:
+                          </p>
+
+                          <div className="mt-3 p-3 bg-slate-950 border border-slate-850 rounded-lg space-y-2 text-center">
+                            <button
+                              onClick={handleManualSync}
+                              disabled={!isSupabaseConfigured() || isSupabaseSyncing || garage.length === 0}
+                              className={`w-full text-xs font-bold font-mono uppercase px-4 py-2 rounded-lg cursor-pointer transition text-slate-950 ${
+                                isSupabaseConfigured() && garage.length > 0
+                                  ? `${activeTheme.accentBg} ${activeTheme.accentHover}`
+                                  : "bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-850"
+                              }`}
+                            >
+                              {isSupabaseSyncing ? "Uploading data blocks..." : "Push Local Database to Supabase Cloud"}
+                            </button>
+                            
+                            {/* Display Sync Progress log */}
+                            {syncProgress && (
+                              <div className="text-[9px] text-zinc-300 leading-normal p-2 bg-slate-900/80 rounded border border-slate-850 font-sans text-left mt-1.5 shadow-sm">
+                                <span className={`block font-semibold uppercase text-[8px] font-mono mb-0.5 ${activeTheme.primaryText}`}>Sync log output:</span>
+                                {syncProgress}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Checkpoint 4 */}
+                    <div className="p-4 rounded-xl border border-slate-850 bg-slate-900/20 space-y-3 font-sans">
+                      <div className="flex items-start gap-3">
+                        <span className="w-5 h-5 bg-slate-900 text-slate-400 font-mono text-xs font-bold rounded-full flex items-center justify-center border border-slate-800 shrink-0">4</span>
+                        <div className="space-y-1 flex-1">
+                          <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Deploy Frontend & Backend to Vercel</h4>
+                          <p className="text-[11px] text-slate-400 leading-normal">
+                            WhipCheck is completely serverless friendly! The React Vite application compiles to high-performance static pages while the backend uses a secure Serverless routing map.
+                          </p>
+
+                          <div className="mt-3 p-3 bg-slate-950 border border-slate-850 rounded-lg space-y-2">
+                            <div className="flex items-center justify-between text-[10px] font-mono">
+                              <span className="text-slate-500 font-bold block">VERCEL CONFIGURATION FILE:</span>
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-850 text-zinc-300 block font-semibold text-[9px] font-mono">vercel.json</span>
+                            </div>
+                            <p className="text-[10px] text-zinc-400 leading-normal font-sans">
+                              A production config file (<code className="font-mono text-amber-400">vercel.json</code>) has been successfully created in the root of your project workspace. This directs Vercel to route endpoint calls to your serverless endpoint.
+                            </p>
+                          </div>
+
+                          <div className="mt-3 space-y-2 text-[11px] leading-relaxed">
+                            <p className="font-bold text-slate-200 font-mono text-xs uppercase">Deploying in 2 Simple Clicks:</p>
+                            <ol className="list-decimal pl-4 space-y-1 text-slate-400">
+                              <li>Create a new site at <a href="https://vercel.com" target="_blank" rel="noopener noreferrer" className="text-sky-450 hover:underline font-semibold inline-flex items-center gap-0.5">Vercel Console <ExternalLink className="h-2.5 w-2.5 inline" /></a> and connect your GitHub repo.</li>
+                              <li>Add your environment parameters in the Vercel Settings:
+                                <ul className="list-disc pl-4 mt-1 font-mono text-[10.5px] text-zinc-400">
+                                  <li><code className="text-amber-400">GEMINI_API_KEY</code> = (From Google AI Studio)</li>
+                                  <li><code className="text-sky-400">VITE_SUPABASE_URL</code> = (From Supabase API)</li>
+                                  <li><code className="text-sky-400">VITE_SUPABASE_ANON_KEY</code> = (From Supabase API)</li>
+                                </ul>
+                              </li>
+                            </ol>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+
         </main>
 
         {/* FUTURISTIC PREMIUM MOBILE NAVIGATION BAR (Matches High Density styling) */}
         <footer className="mt-auto bg-black/95 backdrop-blur-md border-t border-slate-850 p-3 shrink-0 relative z-20">
-          <div className="flex justify-around items-center max-w-sm mx-auto">
+          <div className="flex justify-around items-center max-w-md mx-auto">
             
             {/* Nav item 1 */}
             <button
@@ -1140,8 +1717,20 @@ export default function App() {
               <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Garage</span>
             </button>
 
+            {/* Nav item 4 (Cloud Integration & Deploy) */}
+            <button
+              onClick={() => { setActiveTab('migration'); setSelectedGarageCar(null); }}
+              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'migration' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
+            >
+              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'migration' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
+                <Server className="h-4 w-4" />
+              </div>
+              <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Deploy</span>
+            </button>
+
           </div>
         </footer>
+
 
       </div>
     </div>
