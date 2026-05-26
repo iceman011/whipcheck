@@ -4,13 +4,14 @@ import {
   Trash2, ShieldAlert, CheckCircle2, ChevronRight, RotateCcw, 
   MapPin, Loader2, Gauge, Settings, Cpu, HelpCircle, RefreshCw, Layers, ShieldCheck,
   Search, ArrowUpDown, SlidersHorizontal, Cloud, CloudOff, Server, Copy, Check, ExternalLink, Code,
-  LogOut, User, Mail, Lock
+  LogOut, User, Mail, Lock, Scale
 } from "lucide-react";
 import { IdentifiedCar, ScanStepType } from "./types";
 import StatusIndicator from "./components/StatusIndicator";
 import SampleCarousel from "./components/SampleCarousel";
 import GuideSection from "./components/GuideSection";
 import CarDetailsReport from "./components/CarDetailsReport";
+import CarComparison from "./components/CarComparison";
 import { 
   isSupabaseConfigured, 
   fetchSupabaseGarage, 
@@ -158,6 +159,28 @@ export default function App() {
   // Scans history & collection garage
   const [garage, setGarage] = useState<IdentifiedCar[]>([]);
   const [selectedGarageCar, setSelectedGarageCar] = useState<IdentifiedCar | null>(null);
+
+  // Custom vehicle comparison module states
+  const [compareList, setCompareList] = useState<IdentifiedCar[]>([]);
+  const [showCompareActive, setShowCompareActive] = useState<boolean>(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  
+  const handleToggleCompare = (car: IdentifiedCar, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCompareList((prev) => {
+      const exists = prev.some((c) => c.id === car.id);
+      if (exists) {
+        return prev.filter((c) => c.id !== car.id);
+      } else {
+        if (prev.length >= 3) {
+          setCompareError("Maximum of 3 vehicles can be compared at once.");
+          setTimeout(() => setCompareError(null), 3500);
+          return prev;
+        }
+        return [...prev, car];
+      }
+    });
+  };
 
   // Garage sorting, grouping, and search states
   const [garageSearch, setGarageSearch] = useState<string>("");
@@ -412,6 +435,7 @@ export default function App() {
     if (e) e.stopPropagation();
     const updated = garage.filter(c => c.id !== id);
     setGarage(updated);
+    setCompareList(prev => prev.filter(c => c.id !== id));
     localStorage.setItem("car_spotter_garage_v2", JSON.stringify(updated));
     if (selectedGarageCar && selectedGarageCar.id === id) {
       setSelectedGarageCar(null);
@@ -903,34 +927,29 @@ create policy "Allow public access to vehicles"
         <header className="p-4 border-b border-slate-850 bg-slate-900/35 relative overflow-hidden shrink-0">
           <div className={`absolute top-0 right-0 h-16 w-16 ${activeTheme.pulseBg}/5 rounded-full blur-xl pointer-events-none`}></div>
           
-          <div className="flex items-center justify-between relative z-10">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-1.5">
-                <span className={`inline-block w-2.5 h-2.5 rounded-full ${activeTheme.accentBg} animate-pulse`}></span>
-                <h1 className="text-sm font-black tracking-widest text-slate-100 font-display">WHIPCHECK v4.5</h1>
+          <div className="flex items-center justify-between relative z-10 w-full">
+            {/* Trendy Sportive Logo and App Name */}
+            <div className="flex items-center gap-2.5">
+              <div className={`relative flex items-center justify-center w-9 h-9 rounded-xl ${activeTheme.accentBg} text-slate-950 font-bold shadow-lg shadow-black/40 shrink-0 transform -skew-x-12 hover:skew-x-0 transition-all duration-300`}>
+                <div className="absolute inset-0 bg-white/20 rounded-xl"></div>
+                <Gauge className="w-5 h-5 text-slate-950 relative z-10" />
               </div>
-              <p className={`text-[10px] ${activeTheme.primaryText} font-mono tracking-wider font-semibold`}>CHASSIS VISION ENGINE: ONLINE</p>
+              
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[8px] font-mono tracking-widest text-slate-950 font-extrabold uppercase ${activeTheme.accentBg} px-1.5 py-0.5 rounded`}>GT</span>
+                  <h1 className="text-sm font-black tracking-tight text-slate-100 font-display">WHIPCHECK</h1>
+                </div>
+                <p className="text-[9.5px] text-zinc-400 uppercase font-mono tracking-wider font-semibold">Enthusiast Car Detector</p>
+              </div>
             </div>
 
             <div className="text-right">
-              <span className="text-[9px] font-mono text-slate-500 block uppercase">Spotter Location</span>
-              <span className={`text-[10px] font-mono ${activeTheme.primaryText} font-bold truncate max-w-[150px] inline-block`}>{gpsCoords}</span>
+              <span className="text-[8.5px] font-mono text-slate-500 block uppercase">App Status</span>
+              <span className="text-[10px] font-mono text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-0.5 rounded-full uppercase">Online</span>
             </div>
           </div>
         </header>
-
-        {/* Real-time Health Status banner */}
-        <div className="bg-[#0c0c0e] px-4 py-2 border-b border-slate-850/65 flex justify-between items-center text-[10px] font-mono">
-          <div className="flex items-center gap-1">
-            <Cpu className={`h-3.5 w-3.5 ${activeTheme.primaryText}`} />
-            <span className="text-slate-400">GPS Tracker:</span>
-            <span className="text-slate-200 truncate max-w-[160px]">{gpsName}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-            <span className="text-emerald-400 font-bold">API ACTIVE</span>
-          </div>
-        </div>
 
         {/* SPORT LIVERIES TUNER SELECTOR */}
         <div className="px-4 py-2.5 bg-black/45 border-b border-slate-850/60 flex items-center justify-between gap-2 overflow-x-auto scrollbar-none shrink-0 transition-colors duration-350">
@@ -1117,17 +1136,12 @@ create policy "Allow public access to vehicles"
                   {/* Active Samples Gallery */}
                   <SampleCarousel onSelectSample={handleSelectSample} disabled={false} />
 
-                  {/* Quick System Calibration info */}
-                  <div className="p-3 bg-slate-900/30 border border-slate-850 rounded-xl space-y-1 text-[10px] font-mono">
-                    <span className="text-slate-400 block tracking-wider font-semibold uppercase">System Telemetry Log</span>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Lens Aperture</span>
-                      <span className="text-zinc-200 font-medium">f/1.8 Auto Calibration</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Grid Resolution</span>
-                      <span className="text-zinc-200 font-medium">2560 x 1440 HD Matrix</span>
-                    </div>
+                  {/* Tips for Best Results */}
+                  <div className="p-3 bg-slate-900/35 border border-slate-850/80 rounded-xl space-y-1 text-[10.5px]">
+                    <span className={`block text-[9px] font-mono tracking-wider font-extrabold uppercase ${activeTheme.primaryText}`}>💡 Dynamic Spotter Tip</span>
+                    <p className="text-zinc-400 leading-relaxed font-sans mt-0.5">
+                      For peak accuracy, capture high-contrast side viewpoints or 3/4 front profiles in clear lighting.
+                    </p>
                   </div>
                 </div>
               )}
@@ -1294,8 +1308,15 @@ create policy "Allow public access to vehicles"
                 </span>
               </div>
 
+              {compareError && (
+                <div className="p-3 bg-red-950/40 border border-red-500/15 rounded-xl text-red-100 text-[10px] leading-relaxed flex items-center gap-2 font-mono animate-fade-in">
+                  <ShieldAlert className="h-4 w-4 shrink-0 text-red-500" />
+                  <span>{compareError}</span>
+                </div>
+              )}
+
               {/* Search and Database Controls */}
-              {!selectedGarageCar && garage.length > 0 && (
+              {!selectedGarageCar && !showCompareActive && garage.length > 0 && (
                 <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-850 space-y-2.5">
                   {/* Search input with clear button */}
                   <div className="relative">
@@ -1376,7 +1397,16 @@ create policy "Allow public access to vehicles"
               )}
 
               {/* Select Garage Car or list of saved items */}
-              {selectedGarageCar ? (
+              {showCompareActive ? (
+                <CarComparison
+                  cars={compareList}
+                  onClose={() => setShowCompareActive(false)}
+                  onRemoveFromCompare={(id) => {
+                    setCompareList((prev) => prev.filter((c) => c.id !== id));
+                  }}
+                  activeTheme={activeTheme}
+                />
+              ) : selectedGarageCar ? (
                 <div className="space-y-3">
                   <button
                     onClick={() => setSelectedGarageCar(null)}
@@ -1483,13 +1513,28 @@ create policy "Allow public access to vehicles"
                                   {car.estimatedUsedPrice || "Est. Resale N/A"}
                                 </span>
                                 
-                                <button
-                                  onClick={(e) => removeFromGarage(car.id, e)}
-                                  className="text-slate-500 hover:text-red-400 transition cursor-pointer p-1"
-                                  title="Remove from database"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={(e) => handleToggleCompare(car, e)}
+                                    className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-lg border transition duration-200 flex items-center gap-1 ${
+                                      compareList.some(c => c.id === car.id)
+                                        ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                                        : "bg-slate-950/60 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-750"
+                                    }`}
+                                    title="Compare with other vehicles"
+                                  >
+                                    <Scale className="h-2.5 w-2.5" />
+                                    <span>{compareList.some(c => c.id === car.id) ? "Comparing" : "Compare"}</span>
+                                  </button>
+
+                                  <button
+                                    onClick={(e) => removeFromGarage(car.id, e)}
+                                    className="text-slate-500 hover:text-red-400 transition cursor-pointer p-1"
+                                    title="Remove from database"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -1539,8 +1584,8 @@ create policy "Allow public access to vehicles"
                   </div>
                   
                   <div className="p-3 bg-slate-900/40 rounded-xl border border-slate-850/80 text-left text-[10px] leading-relaxed text-slate-400">
-                    <p className="font-bold text-slate-300 uppercase font-mono text-[9px] mb-1">Testing Overrides:</p>
-                    You can override active client metrics instantly at runtime using the <strong>System operator</strong> input at the bottom of this viewport.
+                    <p className="font-bold text-slate-300 uppercase font-mono text-[9px] mb-1">Backup & Cloud Access:</p>
+                    Sign in or register your account in this tab to unlock multi-device backup and dynamic synchronizations for your collected garage.
                   </div>
                 </div>
               ) : (
@@ -1704,31 +1749,6 @@ create policy "Allow public access to vehicles"
                           </p>
                         </div>
                       </div>
-
-                      {/* Troubleshooting Card */}
-                      <div className="p-4 bg-slate-900/20 rounded-xl border border-slate-850 space-y-3 font-sans">
-                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
-                          <span>💡 Resilient Login Tips</span>
-                        </h4>
-                        <div className="space-y-3 text-[10.5px] leading-relaxed text-zinc-400">
-                          <div>
-                            <p className="font-bold text-slate-300">
-                              Option 1: Paste the Confirmation Link Directly
-                            </p>
-                            <p className="text-slate-500 mt-1">
-                              If clicking the email confirmation link opens an invalid/broken URL, simply <strong>copy that link</strong> from your email and <strong>paste it directly</strong> into the "One-Time PIN" input box above. Our app will automatically extract the security hash and log you in!
-                            </p>
-                          </div>
-                          <div className="border-t border-slate-850/60 pt-3">
-                            <p className="font-bold text-slate-300">
-                              Option 2: Use 6-Digit Numeric Codes
-                            </p>
-                            <p className="text-slate-500 mt-1">
-                              If you prefer numeric codes, go to your <strong>Supabase Dashboard → Auth → Email Templates</strong>. Under "Magic Link", change <code className="bg-black text-red-500 px-1 rounded font-mono">{"{{ .ConfirmationURL }}"}</code> to <code className="bg-black text-emerald-400 px-1 rounded font-mono">{"{{ .Token }}"}</code>. This sends a 6-digit numeric OTP you can copy and paste directly into the box!
-                            </p>
-                          </div>
-                        </div>
-                      </div>
                     </div>
                   ) : (
                     /* CASE: USER LOGGED IN - display user metrics card */
@@ -1789,154 +1809,51 @@ create policy "Allow public access to vehicles"
                         </div>
                       </div>
 
-                      {/* SQL Schema Guideline Dropdown for administrators/developers configuring databases */}
-                      <details className="p-4 rounded-xl border border-slate-850 bg-slate-900/10 font-sans group cursor-pointer transition-all">
-                        <summary className="flex items-center justify-between text-xs font-bold font-mono uppercase tracking-wide text-slate-400 select-none">
-                          <span>🔧 Developer Schema Blueprint (RLS)</span>
-                          <span className="text-[10px] text-slate-500 group-open:rotate-180 transition">&darr;</span>
-                        </summary>
-                        
-                        <div className="space-y-3 pt-3 text-[11px] leading-relaxed text-slate-450 cursor-default">
-                          <p>
-                            To allow multi-user accounts where each user has their own private garage, apply this schema table definition on your <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" className="text-sky-450 hover:underline inline-flex items-center gap-0.5 font-semibold">Supabase Portal <ExternalLink className="h-2.5 w-2.5 inline" /></a> SQL Editor:
-                          </p>
 
-                          <div className="relative font-mono bg-slate-950 border border-slate-850 rounded-lg p-3 text-[10px] overflow-x-auto text-slate-400 max-h-48 leading-relaxed">
-                            <pre className="whitespace-pre">{`-- Create WhipCheck saved vehicles table
-create table public.vehicles (
-  id text primary key,
-  timestamp text not null,
-  image text not null,
-  "isCar" boolean default true,
-  make text,
-  model text,
-  generation text,
-  "yearRange" text,
-  confidence numeric,
-  color text,
-  category text,
-  "engineType" text,
-  power text,
-  horsepower text,
-  torque text,
-  "modelYear" text,
-  "zeroToSixty" text,
-  "estimatedNewPrice" text,
-  "estimatedUsedPrice" text,
-  trivia jsonb,
-  tips jsonb,
-  specs jsonb,
-  user_id uuid default auth.uid() references auth.users(id) on delete cascade,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Enable Row Level Security (RLS)
-alter table public.vehicles enable row level security;
-
--- Create policy to allow users to manage their own vehicles
-create policy "Users can manage their own vehicles" 
-  on public.vehicles 
-  for all 
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);`}</pre>
-                            <button
-                              onClick={handleCopySql}
-                              className="absolute top-2 right-2 bg-slate-900/95 border border-slate-800 hover:bg-slate-800 text-slate-300 font-semibold px-2 py-1 rounded text-[9px] cursor-pointer flex items-center gap-1 transition-all"
-                            >
-                              {copiedSql ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                              {copiedSql ? "Copied!" : "Copy SQL"}
-                            </button>
-                          </div>
-                        </div>
-                      </details>
                     </div>
                   )}
                 </div>
               )}
-
-              {/* ADMIN CONFIGURATION GATEWAY (Collapsible Operator console) */}
-              <div className="border-t border-slate-850/85 pt-6 mt-4">
-                {!isAdminLoggedIn ? (
-                  /* Admin portal entrance toggle */
-                  <div className="text-center">
-                    <button
-                      onClick={() => setIsAdminLoggedIn(true)}
-                      className="text-[10px] font-mono uppercase tracking-wider text-slate-600 hover:text-slate-400 font-bold transition flex items-center gap-1 mx-auto cursor-pointer"
-                    >
-                      <span>⚙️ System Administrator Dashboard Portal</span>
-                    </button>
-                  </div>
-                ) : (
-                  <div className="p-4 bg-slate-950 rounded-2xl border border-red-500/10 space-y-4 font-sans relative">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <ShieldCheck className="h-4 w-4 text-red-400 shrink-0" />
-                        <span className="text-[11px] font-black uppercase tracking-wider font-mono text-slate-200">Authorized Operator Config Portal</span>
-                      </div>
-                      <button
-                        onClick={handleAdminLogout}
-                        className="text-[9px] uppercase font-mono tracking-widest font-black text-red-400 hover:text-red-300 bg-red-950/15 px-2 py-0.5 rounded border border-red-900/20 cursor-pointer transition"
-                      >
-                        Lock Portal
-                      </button>
-                    </div>
-
-                    <p className="text-[10.5px] text-slate-500 leading-normal">
-                      Operator bypass console: override Supabase endpoint details at runtime. These parameters take immediate effect across all authentication routines.
-                    </p>
-
-                    <div className="space-y-3 pt-1">
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Project API URL</label>
-                        <input
-                          type="text"
-                          value={customSupabaseUrl}
-                          onChange={(e) => setCustomSupabaseUrl(e.target.value)}
-                          placeholder="https://your-project.supabase.co"
-                          className="w-full bg-slate-900 border border-slate-850 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono tracking-wide focus:outline-none focus:border-red-500/55"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Service / Anon API Key</label>
-                        <input
-                          type="text"
-                          value={customSupabaseAnonKey}
-                          onChange={(e) => setCustomSupabaseAnonKey(e.target.value)}
-                          placeholder="eyJhbGciOi..."
-                          className="w-full bg-slate-900 border border-slate-850 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-red-500/55"
-                        />
-                      </div>
-
-                      <div className="flex gap-2.5 pt-1">
-                        <button
-                          onClick={handleSaveParameters}
-                          className="flex-1 bg-red-650 hover:bg-red-600 text-white font-bold font-mono uppercase text-[10px] py-1.5 rounded-lg transition cursor-pointer"
-                        >
-                          Apply Overrides
-                        </button>
-                        <button
-                          onClick={handleResetParameters}
-                          className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold font-mono uppercase text-[10px] py-1.5 rounded-lg transition cursor-pointer"
-                        >
-                          Reset
-                        </button>
-                      </div>
-                      
-                      {paramFeedback && (
-                        <div className="text-[9.5px] p-2 bg-emerald-990/35 border border-emerald-500/20 text-emerald-400 rounded text-center font-sans font-medium">
-                          {paramFeedback}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
           )}
 
 
         </main>
+
+        {/* FLOATING VEHICLE COMPARISON DRAWER */}
+        {compareList.length > 0 && !showCompareActive && (
+          <div className="fixed bottom-20 left-4 right-4 md:left-auto md:right-4 md:w-96 bg-slate-900/95 backdrop-blur-md rounded-2xl border border-amber-500/25 p-3 shadow-2xl flex items-center justify-between gap-4 z-50 animate-fade-in shadow-amber-500/5">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/20 shrink-0 flex items-center justify-center animate-pulse">
+                <Scale className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h5 className="text-[10px] font-bold text-slate-100 uppercase font-mono tracking-wide">Dynamic Spec Matchup ({compareList.length}/3)</h5>
+                <p className="text-[11px] font-semibold text-amber-400 truncate mt-0.5 font-sans leading-none">
+                  {compareList.map(c => c.make).join(" vs ")}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setCompareList([])}
+                className="text-[10px] text-zinc-400 hover:text-slate-100 font-bold px-2.5 py-1.5 rounded-lg border border-slate-850 bg-slate-950 font-mono transition cursor-pointer"
+              >
+                Clear
+              </button>
+              <button
+                onClick={() => {
+                  setShowCompareActive(true);
+                  setSelectedGarageCar(null);
+                  setActiveTab('garage');
+                }}
+                className="text-[10px] text-slate-950 bg-amber-400 hover:bg-amber-500 font-bold px-3 py-1.5 rounded-lg font-mono transition shadow-lg shrink-0 cursor-pointer"
+              >
+                Compare Now
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* FUTURISTIC PREMIUM MOBILE NAVIGATION BAR (Matches High Density styling) */}
         <footer className="mt-auto bg-black/95 backdrop-blur-md border-t border-slate-850 p-3 shrink-0 relative z-20">
