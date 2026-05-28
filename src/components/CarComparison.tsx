@@ -1,8 +1,9 @@
-import React, { useState } from "react";
-import { IdentifiedCar } from "../types";
+import React, { useState, useEffect } from "react";
+import { IdentifiedCar, getNormalizedCarKey } from "../types";
 import { 
   X, Check, Zap, Gauge, DollarSign, Sparkles, Calendar, Scale, 
-  ChevronDown, Flame, Award, ShieldCheck, HelpCircle, Eye, RefreshCw, Info, ThumbsUp
+  ChevronDown, Flame, Award, ShieldCheck, HelpCircle, Eye, RefreshCw, Info, ThumbsUp,
+  Share2, MessageSquare, Copy, Trash2
 } from "lucide-react";
 
 interface CarComparisonProps {
@@ -95,6 +96,204 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
       </div>
     );
   }
+
+  // Comparison-specific comments & sharing logic with live backend sync
+  const compKey = cars
+    .map(getNormalizedCarKey)
+    .sort()
+    .join("-vs-");
+  const [comments, setComments] = useState<{ id: string; author: string; text: string; timestamp: string }[]>([]);
+  const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [newCommentText, setNewCommentText] = useState("");
+  const [spotterUserName, setSpotterUserName] = useState(() => {
+    return localStorage.getItem("whipcheck_spotter_name") || `Spotter_${Math.floor(1000 + Math.random() * 9000)}`;
+  });
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
+
+  // Sync comments for current comparison deck from the global server API
+  const fetchCompareComments = async () => {
+    setIsLoadingComments(true);
+    try {
+      const response = await fetch(`/api/comments/${compKey}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.comments && data.comments.length > 0) {
+          setComments(data.comments);
+          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+        } else {
+          // If empty on server, check local legacy storage
+          const savedLocal = localStorage.getItem(`compare_comments_${compKey}`);
+          if (savedLocal) {
+            const parsed = JSON.parse(savedLocal);
+            setComments(parsed);
+            // Sync legacy comments with server
+            for (const col of parsed) {
+              if (col.id !== "comp-init") {
+                await fetch(`/api/comments/${compKey}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ author: col.author, text: col.text })
+                });
+              }
+            }
+          } else {
+            setComments([
+              {
+                id: "comp-init",
+                author: "Whipcheck Matchup Bot",
+                text: `This is a live matchup of ${cars.length} cars! Write down owner reviews, custom comparisons, daily setups, or tell other petrolheads which one you would pick!`,
+                timestamp: new Date().toLocaleDateString()
+              }
+            ]);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not connect to compare comments API, falling back to local simulation", err);
+      const savedLocal = localStorage.getItem(`compare_comments_${compKey}`);
+      if (savedLocal) {
+        setComments(JSON.parse(savedLocal));
+      } else {
+        setComments([
+          {
+            id: "comp-init",
+            author: "Whipcheck Matchup Bot",
+            text: `This is a live matchup of ${cars.length} cars! Write down owner reviews, custom comparisons, daily setups, or tell other petrolheads which one you would pick!`,
+            timestamp: new Date().toLocaleDateString()
+          }
+        ]);
+      }
+    } finally {
+      setIsLoadingComments(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCompareComments();
+
+    // Setup active real-time periodic polling on active debate room
+    const interval = setInterval(() => {
+      fetchCompareComments();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [compKey]);
+
+  const handleAddComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCommentText.trim()) return;
+
+    const authorName = spotterUserName.trim() || "Anonymous Petrolhead";
+    const commentBody = newCommentText.trim();
+
+    // Optimistic UI updates
+    const tempId = `temp-${Date.now()}`;
+    const optimisticComment = {
+      id: tempId,
+      author: authorName,
+      text: commentBody,
+      timestamp: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setComments(prev => [...prev.filter(c => c.id !== "comp-init"), optimisticComment]);
+    setNewCommentText("");
+
+    try {
+      const response = await fetch(`/api/comments/${compKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ author: authorName, text: commentBody })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.comments) {
+          setComments(data.comments);
+          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+        }
+      } else {
+        const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
+        setComments(updated);
+        localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
+      }
+    } catch (err) {
+      console.error("Failed to sync compare comment to backend database", err);
+      const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
+      setComments(updated);
+      localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
+    }
+
+    if (spotterUserName.trim()) {
+      localStorage.setItem("whipcheck_spotter_name", spotterUserName.trim());
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (commentId === "comp-init") {
+      const updated = comments.filter(c => c.id !== commentId);
+      setComments(updated);
+      localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
+      return;
+    }
+
+    setComments(prev => prev.filter(c => c.id !== commentId));
+
+    try {
+      const response = await fetch(`/api/comments/${compKey}/${commentId}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.comments) {
+          setComments(data.comments);
+          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete matchup comment from server database", err);
+      const updated = comments.filter(c => c.id !== commentId);
+      localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
+    }
+  };
+
+  const getShareLink = () => {
+    try {
+      const payload = btoa(unescape(encodeURIComponent(JSON.stringify(cars))));
+      return `${window.location.origin}${window.location.pathname}?share_compare=${payload}`;
+    } catch {
+      return `${window.location.origin}${window.location.pathname}`;
+    }
+  };
+
+  const getShareText = () => {
+    const names = cars.map(c => `${c.make} ${c.model}`).join(" vs ");
+    return `🏁 WHIPCHECK HEAD-TO-HEAD AUTO MATCHUP 🏁
+🔥 Matchup: ${names}
+
+Power Stats:
+${cars.map(c => `- ${c.make}: ${c.horsepower || c.power || "N/A"}`).join("\n")}
+
+Sprint Times (0-100 km/h):
+${cars.map(c => `- ${c.make}: ${c.zeroToSixty}`).join("\n")}
+
+Estimated Price Levels:
+${cars.map(c => `- ${c.make}: ${c.estimatedUsedPrice}`).join("\n")}
+
+Which one is your ultimate choice? Explore and vote on Whipcheck GT!`;
+  };
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(getShareLink());
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const handleCopyText = () => {
+    navigator.clipboard.writeText(getShareText());
+    setCopiedText(true);
+    setTimeout(() => setCopiedText(false), 2000);
+  };
 
   // Calculate comparisons for 2 or more cars
   const carSpecsList = cars.map(car => ({
@@ -654,6 +853,162 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
           </div>
         </div>
       )}
+
+      {/* Broadcast & Share Matchup Section */}
+      <div className="bg-[#0f121d] p-4 rounded-xl border border-slate-800 space-y-3 shadow-md">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 px-0.5">
+            <Share2 className="h-4 w-4 text-cyan-400" />
+            <h3 className="text-xs font-bold text-slate-100 font-display uppercase tracking-wider">Broadcast Dynamic Matchup</h3>
+          </div>
+          <span className="text-[8px] font-mono text-cyan-400 uppercase tracking-widest bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-500/10">Active Desk</span>
+        </div>
+
+        <div className="space-y-2.5">
+          <p className="text-[10px] text-zinc-400 leading-relaxed">
+            Copy the direct Spotter Matchup Link to load this head-to-head comparison live, or copy the quick text scorecard details!
+          </p>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={handleCopyLink}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-950 hover:bg-slate-900 text-slate-200 text-[10px] font-mono rounded-lg border border-slate-800 transition cursor-pointer"
+            >
+              {copiedLink ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-emerald-400 font-bold font-mono">Link Copied!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                  <span>Copy Matchup Link</span>
+                </>
+              )}
+            </button>
+
+            <button
+              onClick={handleCopyText}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-950 hover:bg-slate-900 text-slate-200 text-[10px] font-mono rounded-lg border border-slate-800 transition cursor-pointer"
+            >
+              {copiedText ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-emerald-400 font-bold font-mono">Report Copied!</span>
+                </>
+              ) : (
+                <>
+                  <MessageSquare className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                  <span>Copy Matchup Report</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Social icons */}
+          <div className="flex items-center gap-2 justify-center pt-0.5">
+            <a
+              href={`https://api.whatsapp.com/send?text=${encodeURIComponent(getShareText() + "\n\n🌐 View Live Matchup Desk: " + getShareLink())}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400 text-[9px] font-mono border border-emerald-500/20 rounded-md transition font-semibold"
+            >
+              WhatsApp
+            </a>
+            <a
+              href={`https://twitter.com/intent/tweet?text=${encodeURIComponent("Head-to-head performance matchup check on Whipcheck GT!")}&url=${encodeURIComponent(getShareLink())}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 bg-cyan-500/10 hover:bg-cyan-500/25 text-cyan-400 text-[9px] font-mono border border-cyan-500/20 rounded-md transition font-semibold"
+            >
+              Share on X
+            </a>
+          </div>
+        </div>
+      </div>
+
+      {/* Comparison Discussion / Spotter War Room */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5 px-1">
+          <MessageSquare className="h-3.5 w-3.5 text-amber-500" />
+          <h3 className="text-xs font-bold text-slate-200 font-display uppercase tracking-wider">Spotter Matchup Debate Room ({comments.length})</h3>
+        </div>
+
+        <div className="bg-[#0f121d] p-4 rounded-xl border border-slate-800 space-y-4 shadow-md">
+          {/* Comment Stream */}
+          <div className="space-y-3 max-h-48 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-800">
+            {comments.length === 0 ? (
+              <p className="text-[10px] text-slate-500 text-center py-2 font-mono uppercase">
+                Debate room is empty! Who wins this spot? Leave your vote below.
+              </p>
+            ) : (
+              comments.map((cmt) => (
+                <div key={cmt.id} className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-850/80 flex flex-col gap-1 relative group">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-5 h-5 rounded-full bg-amber-500/10 text-amber-400 flex items-center justify-center text-[8.5px] font-mono font-bold uppercase border border-amber-500/20 shrink-0 shadow-sm">
+                        {cmt.author ? cmt.author[0] : "S"}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                        <span className="text-[10px] font-extrabold text-amber-400 font-mono">
+                          {cmt.author}
+                        </span>
+                        <span className="text-[8.5px] text-slate-400 font-medium px-1.5 py-0.5 rounded bg-zinc-805 border border-zinc-800/40">
+                          {cmt.timestamp}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleDeleteComment(cmt.id)}
+                      className="text-red-400 hover:text-red-300 opacity-60 hover:opacity-100 transition duration-150 p-1 cursor-pointer shrink-0"
+                      title="Remove note"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-zinc-300 leading-relaxed pl-5 font-sans break-words whitespace-pre-line">
+                    {cmt.text}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* New Comment Submission */}
+          <form onSubmit={handleAddComment} className="border-t border-slate-850/85 pt-3 space-y-2.5">
+            <div className="grid grid-cols-3 gap-2 items-center">
+              <label className="text-[9px] font-mono text-slate-500 uppercase tracking-wider pl-0.5">Spotter Name</label>
+              <input
+                type="text"
+                value={spotterUserName}
+                onChange={(e) => setSpotterUserName(e.target.value)}
+                placeholder="Alias"
+                className="col-span-2 bg-slate-950 border border-slate-800 rounded-md text-[10px] text-slate-250 px-2 py-1 font-mono focus:outline-none focus:border-cyan-400/50"
+                maxLength={20}
+              />
+            </div>
+
+            <div className="relative flex items-center col-span-3">
+              <textarea
+                value={newCommentText}
+                onChange={(e) => setNewCommentText(e.target.value)}
+                placeholder="Cast your opinion or share tuning advice on this head-to-head..."
+                rows={2}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg text-[10.5px] text-slate-200 p-2 pr-10 focus:outline-none focus:border-cyan-400/50 resize-none font-sans"
+                maxLength={250}
+              />
+              <button
+                type="submit"
+                disabled={!newCommentText.trim()}
+                className="absolute right-2 px-2.5 py-1.5 rounded-md bg-cyan-400/10 hover:bg-cyan-400/20 text-cyan-400 disabled:opacity-40 border border-cyan-400/20 text-[9px] font-mono uppercase font-black transition cursor-pointer"
+              >
+                Log
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
 
       {/* Action panel */}
       <div className="flex justify-end gap-3 pt-2">

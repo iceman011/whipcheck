@@ -4,12 +4,10 @@ import {
   Trash2, ShieldAlert, CheckCircle2, ChevronRight, RotateCcw, 
   MapPin, Loader2, Gauge, Settings, Cpu, HelpCircle, RefreshCw, Layers, ShieldCheck,
   Search, ArrowUpDown, SlidersHorizontal, Cloud, CloudOff, Server, Copy, Check, ExternalLink, Code,
-  LogOut, User, Mail, Lock, Scale
+  LogOut, User, Mail, Lock, Scale, MessageSquare
 } from "lucide-react";
-import { IdentifiedCar, ScanStepType } from "./types";
-import StatusIndicator from "./components/StatusIndicator";
+import { IdentifiedCar, ScanStepType, getNormalizedCarKey } from "./types";
 import SampleCarousel from "./components/SampleCarousel";
-import GuideSection from "./components/GuideSection";
 import CarDetailsReport from "./components/CarDetailsReport";
 import CarComparison from "./components/CarComparison";
 import { 
@@ -142,8 +140,8 @@ const HOTSPOTS = [
 ];
 
 export default function App() {
-  // Mobile UI Tabs: 'scan' | 'garage' | 'guide' | 'account'
-  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'guide' | 'account'>('scan');
+  // Mobile UI Tabs: 'scan' | 'garage' | 'account'
+  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'account'>('scan');
 
   // Sport tuning dashboard state
   const [currThemeId, setCurrThemeId] = useState<string>(() => {
@@ -159,6 +157,57 @@ export default function App() {
   // Scans history & collection garage
   const [garage, setGarage] = useState<IdentifiedCar[]>([]);
   const [selectedGarageCar, setSelectedGarageCar] = useState<IdentifiedCar | null>(null);
+
+  // Real-time backend comments meta synchronization for garage items
+  const [garageCommentsMeta, setGarageCommentsMeta] = useState<Record<string, { count: number; lastId: string }>>({});
+
+  useEffect(() => {
+    let active = true;
+    const fetchAllGarageComments = async () => {
+      if (garage.length === 0) return;
+      
+      const uniqueKeys: string[] = Array.from(new Set(garage.map(getNormalizedCarKey)));
+      const newMeta: Record<string, { count: number; lastId: string }> = {};
+
+      await Promise.all(
+        uniqueKeys.map(async (key) => {
+          try {
+            const res = await fetch(`/api/comments/${key}`);
+            if (res.ok) {
+              const data = await res.json();
+              const list = data.comments || [];
+              if (list.length > 0) {
+                newMeta[key] = {
+                  count: list.length,
+                  lastId: list[list.length - 1].id
+                };
+              } else {
+                newMeta[key] = { count: 0, lastId: "" };
+              }
+            }
+          } catch (e) {
+            console.warn("Failed to retrieve comments metadata for", key, e);
+          }
+        })
+      );
+
+      if (active) {
+        setGarageCommentsMeta(newMeta);
+      }
+    };
+
+    fetchAllGarageComments();
+
+    // Poll every 6 seconds to capture live comments added by other users
+    const interval = setInterval(() => {
+      fetchAllGarageComments();
+    }, 6000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [garage, activeTab]);
 
   // Custom vehicle comparison module states
   const [compareList, setCompareList] = useState<IdentifiedCar[]>([]);
@@ -284,6 +333,39 @@ export default function App() {
           setGpsName(randomSpot.name);
         }
       );
+    }
+  }, []);
+
+  // Real Dynamic Sharing deep-link listener
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const sharedCarData = params.get("share_car");
+      const sharedCompareData = params.get("share_compare");
+
+      if (sharedCarData) {
+        const decodedCar = JSON.parse(decodeURIComponent(escape(atob(sharedCarData))));
+        if (decodedCar && decodedCar.id) {
+          setIdentifiedCar(decodedCar);
+          setScanStep('done');
+          setActiveTab('scan');
+          // Clean query params cleanly
+          const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+          window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+        }
+      } else if (sharedCompareData) {
+        const decodedCars = JSON.parse(decodeURIComponent(escape(atob(sharedCompareData))));
+        if (Array.isArray(decodedCars) && decodedCars.length > 0) {
+          setCompareList(decodedCars);
+          setShowCompareActive(true);
+          setActiveTab('garage');
+          // Clean query params cleanly
+          const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+          window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse shared query payload", e);
     }
   }, []);
 
@@ -943,11 +1025,6 @@ create policy "Allow public access to vehicles"
                 <p className="text-[9.5px] text-zinc-400 uppercase font-mono tracking-wider font-semibold">Enthusiast Car Detector</p>
               </div>
             </div>
-
-            <div className="text-right">
-              <span className="text-[8.5px] font-mono text-slate-500 block uppercase">App Status</span>
-              <span className="text-[10px] font-mono text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-0.5 rounded-full uppercase">Online</span>
-            </div>
           </div>
         </header>
 
@@ -1476,69 +1553,110 @@ create policy "Allow public access to vehicles"
                       )}
                       
                       <div className="space-y-3">
-                        {group.cars.map((car) => (
-                          <div
-                            key={car.id}
-                            onClick={() => setSelectedGarageCar(car)}
-                            className="p-3 bg-slate-900/50 hover:bg-slate-900 rounded-xl border border-slate-850 hover:border-slate-800 transition flex gap-3 cursor-pointer group"
-                          >
-                            <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
-                              <img
-                                src={car.image}
-                                alt={car.model}
-                                className="w-full h-full object-cover"
-                              />
-                            </div>
+                        {group.cars.map((car) => {
+                          const normKey = getNormalizedCarKey(car);
+                          const meta = garageCommentsMeta[normKey];
+                          const hasComments = meta && meta.count > 0;
 
-                            <div className="flex-1 min-w-0 flex flex-col justify-between font-sans">
-                              <div>
-                                <div className="flex items-center justify-between gap-1.5">
-                                  <span className="text-[9px] uppercase font-mono text-emerald-400 tracking-wider">
-                                    {car.category}
-                                  </span>
-                                  <span className="text-[8px] font-mono text-slate-500">
-                                    {car.timestamp}
-                                  </span>
-                                </div>
-                                <h4 className={`text-xs font-bold font-display text-slate-200 uppercase truncate group-hover:${activeTheme.primaryText} transition-colors`}>
-                                  {car.make} {car.model}
-                                </h4>
-                                <p className="text-[10px] text-slate-400 truncate mt-0.5">
-                                  Specs: {car.specs?.transmission || "N/A"} • {car.specs?.driveType || "N/A"}
-                                </p>
+                          let lastSeenInfo = null;
+                          try {
+                            const saved = localStorage.getItem(`comments_last_seen_${normKey}`);
+                            if (saved) {
+                              lastSeenInfo = JSON.parse(saved);
+                            }
+                          } catch (e) {}
+
+                          const hasNewComments = hasComments && (
+                            !lastSeenInfo ||
+                            meta.count > lastSeenInfo.lastSeenCount ||
+                            (lastSeenInfo.lastSeenId && meta.lastId !== lastSeenInfo.lastSeenId)
+                          );
+
+                          return (
+                            <div
+                              key={car.id}
+                              onClick={() => setSelectedGarageCar(car)}
+                              className="p-3 bg-slate-900/50 hover:bg-slate-900 rounded-xl border border-slate-850 hover:border-slate-800 transition flex gap-3 cursor-pointer group"
+                            >
+                              <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-800">
+                                <img
+                                  src={car.image}
+                                  alt={car.model}
+                                  className="w-full h-full object-cover"
+                                />
                               </div>
 
-                              <div className="flex justify-between items-center mt-1">
-                                <span className="text-[10px] font-mono font-semibold text-teal-400">
-                                  {car.estimatedUsedPrice || "Est. Resale N/A"}
-                                </span>
-                                
-                                <div className="flex items-center gap-1.5">
-                                  <button
-                                    onClick={(e) => handleToggleCompare(car, e)}
-                                    className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-lg border transition duration-200 flex items-center gap-1 ${
-                                      compareList.some(c => c.id === car.id)
-                                        ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
-                                        : "bg-slate-950/60 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-750"
-                                    }`}
-                                    title="Compare with other vehicles"
-                                  >
-                                    <Scale className="h-2.5 w-2.5" />
-                                    <span>{compareList.some(c => c.id === car.id) ? "Comparing" : "Compare"}</span>
-                                  </button>
+                              <div className="flex-1 min-w-0 flex flex-col justify-between font-sans">
+                                <div>
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <span className="text-[9px] uppercase font-mono text-emerald-400 tracking-wider">
+                                      {car.category}
+                                    </span>
+                                    <span className="text-[8px] font-mono text-slate-500">
+                                      {car.timestamp}
+                                    </span>
+                                  </div>
+                                  <h4 className={`text-xs font-bold font-display text-slate-200 uppercase truncate group-hover:${activeTheme.primaryText} transition-colors`}>
+                                    {car.make} {car.model}
+                                  </h4>
+                                  <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                                    Specs: {car.specs?.transmission || "N/A"} • {car.specs?.driveType || "N/A"}
+                                  </p>
 
-                                  <button
-                                    onClick={(e) => removeFromGarage(car.id, e)}
-                                    className="text-slate-500 hover:text-red-400 transition cursor-pointer p-1"
-                                    title="Remove from database"
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </button>
+                                  {/* Dynamic Comment Counts & Glowing notifications */}
+                                  {hasComments && (
+                                    <div className="flex items-center gap-1 mt-1 text-[10px] font-mono select-none">
+                                      <span className={`px-2 py-0.5 rounded border flex items-center gap-1 transition ${
+                                        hasNewComments
+                                          ? "bg-amber-500/10 text-amber-400 border-amber-500/30 font-bold animate-pulse"
+                                          : "bg-slate-950 text-slate-400 border-slate-800"
+                                      }`}>
+                                        <MessageSquare className="h-2.5 w-2.5 shrink-0" />
+                                        <span>
+                                          {meta.count} {meta.count === 1 ? 'Comment' : 'Comments'}
+                                        </span>
+                                        {hasNewComments && (
+                                          <span className="inline-flex items-center px-1.5 py-0.2 rounded-full text-[7.5px] bg-amber-500 text-amber-950 font-black uppercase tracking-wider animate-bounce ml-0.5 whitespace-nowrap">
+                                            NEW
+                                          </span>
+                                        )}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="flex justify-between items-center mt-1">
+                                  <span className="text-[10px] font-mono font-semibold text-teal-400">
+                                    {car.estimatedUsedPrice || "Est. Resale N/A"}
+                                  </span>
+                                  
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      onClick={(e) => handleToggleCompare(car, e)}
+                                      className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-lg border transition duration-200 flex items-center gap-1 ${
+                                        compareList.some(c => c.id === car.id)
+                                          ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                                          : "bg-slate-950/60 text-slate-400 border-slate-805 hover:text-slate-200 hover:border-slate-755"
+                                      }`}
+                                      title="Compare with other vehicles"
+                                    >
+                                      <Scale className="h-2.5 w-2.5" />
+                                      <span>{compareList.some(c => c.id === car.id) ? "Comparing" : "Compare"}</span>
+                                    </button>
+
+                                    <button
+                                      onClick={(e) => removeFromGarage(car.id, e)}
+                                      className="text-slate-500 hover:text-red-400 transition cursor-pointer p-1"
+                                      title="Remove from database"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ))}
@@ -1546,11 +1664,6 @@ create policy "Allow public access to vehicles"
               )}
 
             </div>
-          )}
-
-          {/* TAB 3: SPOTTING GUIDE */}
-          {activeTab === 'guide' && (
-            <GuideSection />
           )}
 
           {/* TAB 4: SECURED CLOUD PORTAL & AUTHENTICATION */}
@@ -1859,17 +1972,6 @@ create policy "Allow public access to vehicles"
         <footer className="mt-auto bg-black/95 backdrop-blur-md border-t border-slate-850 p-3 shrink-0 relative z-20">
           <div className="flex justify-around items-center max-w-md mx-auto">
             
-            {/* Nav item 1 */}
-            <button
-              onClick={() => { setActiveTab('guide'); setSelectedGarageCar(null); }}
-              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'guide' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
-            >
-              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'guide' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
-                <Compass className="h-4 w-4" />
-              </div>
-              <span className="text-[9px] font-mono uppercase tracking-widest font-semibold">Guide</span>
-            </button>
-
             {/* Nav item 2 (Center Big Button) */}
             <button
               onClick={() => { setActiveTab('scan'); setSelectedGarageCar(null); }}

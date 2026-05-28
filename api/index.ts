@@ -1,6 +1,8 @@
 import express from "express";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -31,6 +33,38 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 // ----------------------------------------------------
+// GLOBAL PERSISTENT COMMENTS STORE (SERVER-SIDE)
+// ----------------------------------------------------
+interface Comment {
+  id: string;
+  author: string;
+  text: string;
+  timestamp: string;
+}
+
+const COMMENTS_FILE = path.join(process.cwd(), "comments_db.json");
+
+function readCommentsDb(): Record<string, Comment[]> {
+  try {
+    if (fs.existsSync(COMMENTS_FILE)) {
+      const content = fs.readFileSync(COMMENTS_FILE, "utf-8");
+      return JSON.parse(content || "{}");
+    }
+  } catch (err) {
+    console.error("Error reading comments database:", err);
+  }
+  return {};
+}
+
+function writeCommentsDb(data: Record<string, Comment[]>) {
+  try {
+    fs.writeFileSync(COMMENTS_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing comments database:", err);
+  }
+}
+
+// ----------------------------------------------------
 // API ENDPOINTS
 // ----------------------------------------------------
 
@@ -39,6 +73,64 @@ app.get("/api/health", (req, res) => {
     status: "ok",
     apiKeyConfigured: !!process.env.GEMINI_API_KEY,
   });
+});
+
+// GET all comments for any specific Car ID or Comparison Key
+app.get("/api/comments/:carId", (req, res) => {
+  try {
+    const { carId } = req.params;
+    const db = readCommentsDb();
+    const list = db[carId] || [];
+    res.json({ comments: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch comments" });
+  }
+});
+
+// POST a new comment to a specific Car ID or Comparison Key
+app.post("/api/comments/:carId", (req, res) => {
+  try {
+    const { carId } = req.params;
+    const { author, text } = req.body;
+    if (!text || !text.trim()) {
+      res.status(400).json({ error: "Comment text cannot be empty" });
+      return;
+    }
+
+    const db = readCommentsDb();
+    if (!db[carId]) {
+      db[carId] = [];
+    }
+
+    const newComment: Comment = {
+      id: `comment-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      author: (author || "Anonymous petrolhead").trim(),
+      text: text.trim(),
+      timestamp: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    db[carId].push(newComment);
+    writeCommentsDb(db);
+
+    res.json({ success: true, comments: db[carId], comment: newComment });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to save comment" });
+  }
+});
+
+// DELETE a comment
+app.delete("/api/comments/:carId/:commentId", (req, res) => {
+  try {
+    const { carId, commentId } = req.params;
+    const db = readCommentsDb();
+    if (db[carId]) {
+      db[carId] = db[carId].filter(c => c.id !== commentId);
+      writeCommentsDb(db);
+    }
+    res.json({ success: true, comments: db[carId] || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete comment" });
+  }
 });
 
 // Identify car from base64 image using Gemini

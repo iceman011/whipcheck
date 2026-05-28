@@ -30,3 +30,10 @@ export interface IdentifiedCar {
 }
 
 export type ScanStepType = 'idle' | 'capture' | 'uploading' | 'enhancing' | 'parsing_vision' | 'done' | 'error';
+
+export function getNormalizedCarKey(vehicle: IdentifiedCar): string {
+  const brand = (vehicle.make || "").trim().toLowerCase();
+  const modelName = (vehicle.model || "").trim().toLowerCase();
+  const gen = (vehicle.generation || "").trim().toLowerCase();
+  return `${brand}_${modelName}_${gen}`.replace(/[^a-z0-9]/g, "_");
+}
