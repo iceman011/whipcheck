@@ -106,10 +106,108 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [newCommentText, setNewCommentText] = useState("");
   const [spotterUserName, setSpotterUserName] = useState(() => {
-    return localStorage.getItem("whipcheck_spotter_name") || `Spotter_${Math.floor(1000 + Math.random() * 9000)}`;
+    try {
+      const savedUser = localStorage.getItem("whipcheck_user_session");
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed) {
+          const name = parsed.username || parsed.email || parsed.id;
+          if (name) return name;
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return localStorage.getItem("whipcheck_spotter_name") || "Guest";
   });
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
+
+  // Aggregated individual ratings state for compared cars
+  const [individualRatings, setIndividualRatings] = useState<Record<string, {
+    overallAvg: number;
+    comfortAvg: number;
+    gasAvg: number;
+    perfAvg: number;
+    reliabilityAvg: number;
+    count: number;
+  }>>({});
+
+  const fetchIndividualRatings = async () => {
+    const ratingsMap: typeof individualRatings = {};
+    for (const car of cars) {
+      const carKey = getNormalizedCarKey(car);
+      try {
+        const response = await fetch(`/api/comments/${carKey}`);
+        if (response.ok) {
+          const data = await response.json();
+          const carComments = data.comments || [];
+          
+          let countComfort = 0; let sumComfort = 0;
+          let countGas = 0; let sumGas = 0;
+          let countPerf = 0; let sumPerf = 0;
+          let countReliability = 0; let sumReliability = 0;
+          
+          carComments.forEach((c: any) => {
+            if (typeof c.comfort === 'number' && c.comfort > 0) {
+              sumComfort += c.comfort;
+              countComfort++;
+            }
+            if (typeof c.gasConsumption === 'number' && c.gasConsumption > 0) {
+              sumGas += c.gasConsumption;
+              countGas++;
+            }
+            if (typeof c.performance === 'number' && c.performance > 0) {
+              sumPerf += c.performance;
+              countPerf++;
+            }
+            if (typeof c.reliability === 'number' && c.reliability > 0) {
+              sumReliability += c.reliability;
+              countReliability++;
+            }
+          });
+          
+          const avgComfort = countComfort > 0 ? (sumComfort / countComfort) : 0;
+          const avgGas = countGas > 0 ? (sumGas / countGas) : 0;
+          const avgPerf = countPerf > 0 ? (sumPerf / countPerf) : 0;
+          const avgReliability = countReliability > 0 ? (sumReliability / countReliability) : 0;
+          
+          let totalScore = 0;
+          let totalCount = 0;
+          if (avgComfort > 0) { totalScore += avgComfort; totalCount++; }
+          if (avgGas > 0) { totalScore += avgGas; totalCount++; }
+          if (avgPerf > 0) { totalScore += avgPerf; totalCount++; }
+          if (avgReliability > 0) { totalScore += avgReliability; totalCount++; }
+          
+          const overallAvg = totalCount > 0 ? (totalScore / totalCount) : 0;
+          const totalRatingsCount = Math.max(countComfort, countGas, countPerf, countReliability);
+          
+          ratingsMap[carKey] = {
+            overallAvg: Number(overallAvg.toFixed(1)),
+            comfortAvg: Number(avgComfort.toFixed(1)),
+            gasAvg: Number(avgGas.toFixed(1)),
+            perfAvg: Number(avgPerf.toFixed(1)),
+            reliabilityAvg: Number(avgReliability.toFixed(1)),
+            count: totalRatingsCount
+          };
+        }
+      } catch (e) {
+        console.error("Failed to fetch individual car ratings in compare:", carKey, e);
+      }
+    }
+    setIndividualRatings(ratingsMap);
+  };
+
+  useEffect(() => {
+    fetchIndividualRatings();
+    
+    // Setup active real-time periodic polling for individual ratings
+    const interval = setInterval(() => {
+      fetchIndividualRatings();
+    }, 5500);
+    
+    return () => clearInterval(interval);
+  }, [cars]);
 
   // Sync comments for current comparison deck from the global server API
   const fetchCompareComments = async () => {
@@ -199,26 +297,35 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
     setComments(prev => [...prev.filter(c => c.id !== "comp-init"), optimisticComment]);
     setNewCommentText("");
 
-    try {
-      const response = await fetch(`/api/comments/${compKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ author: authorName, text: commentBody })
-      });
+    const isUserLoggedIn = !!localStorage.getItem("whipcheck_user_session");
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.comments) {
-          setComments(data.comments);
-          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+    if (isUserLoggedIn) {
+      try {
+        const response = await fetch(`/api/comments/${compKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ author: authorName, text: commentBody })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.comments) {
+            setComments(data.comments);
+            localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+          }
+        } else {
+          const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
+          setComments(updated);
+          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
         }
-      } else {
+      } catch (err) {
+        console.error("Failed to sync compare comment to backend database", err);
         const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
         setComments(updated);
         localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
       }
-    } catch (err) {
-      console.error("Failed to sync compare comment to backend database", err);
+    } else {
+      // Guest local-only save
       const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
       setComments(updated);
       localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
@@ -239,19 +346,25 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
 
     setComments(prev => prev.filter(c => c.id !== commentId));
 
-    try {
-      const response = await fetch(`/api/comments/${compKey}/${commentId}`, {
-        method: "DELETE"
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.comments) {
-          setComments(data.comments);
-          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+    const isUserLoggedIn = !!localStorage.getItem("whipcheck_user_session");
+    if (isUserLoggedIn) {
+      try {
+        const response = await fetch(`/api/comments/${compKey}/${commentId}`, {
+          method: "DELETE"
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.comments) {
+            setComments(data.comments);
+            localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
+          }
         }
+      } catch (err) {
+        console.error("Failed to delete matchup comment from server database", err);
+        const updated = comments.filter(c => c.id !== commentId);
+        localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
       }
-    } catch (err) {
-      console.error("Failed to delete matchup comment from server database", err);
+    } else {
       const updated = comments.filter(c => c.id !== commentId);
       localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
     }
@@ -356,6 +469,22 @@ Which one is your ultimate choice? Explore and vote on Whipcheck GT!`;
     }
     
     return "";
+  };
+
+  // helper to render stars in compare mode
+  const renderCompareStars = (count: number) => {
+    const rounded = Math.round(count);
+    if (!count || count === 0) return <span className="text-zinc-600 font-mono text-[9px] uppercase tracking-wider font-bold">No Reviews</span>;
+    return (
+      <div className="flex items-center gap-0.5" title={`${count.toFixed(1)} / 5 stars`}>
+        {[1, 2, 3, 4, 5].map((star) => (
+          <span key={star} className={`text-[10px] ${star <= rounded ? "text-amber-400 font-extrabold" : "text-zinc-700 font-medium"}`}>
+            ★
+          </span>
+        ))}
+        <span className="text-[10px] text-zinc-400 font-mono ml-1 font-bold">({count.toFixed(1)})</span>
+      </div>
+    );
   };
 
   return (
@@ -665,6 +794,70 @@ Which one is your ultimate choice? Explore and vote on Whipcheck GT!`;
             </div>
           </div>
 
+          {/* USER REVIEW RATINGS COMPARISON CARD */}
+          <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-850 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Award className="h-4 w-4 text-amber-400" />
+                <span className="text-xs font-black uppercase text-slate-200 font-display">User Review Attributes Matchup</span>
+              </div>
+              <span className="text-[9px] font-mono text-zinc-500 uppercase">COMMUNITY VOTES</span>
+            </div>
+
+            <div className={`grid ${cars.length === 3 ? "grid-cols-3 gap-2.5" : "grid-cols-1 md:grid-cols-2 gap-4"}`}>
+              {cars.map((car, idx) => {
+                const r = individualRatings[getNormalizedCarKey(car)];
+                return (
+                  <div key={car.id} className="bg-slate-950/60 p-3 rounded-lg border border-slate-850/80 space-y-2.5">
+                    <div className="flex items-center justify-between border-b border-slate-850/60 pb-2">
+                      <div className="min-w-0">
+                        <span className="text-[9px] font-mono text-amber-500 font-bold uppercase tracking-wider block">Vehicle {idxToLetter(idx)}</span>
+                        <h4 className="text-xs font-bold text-slate-200 uppercase truncate" title={`${car.make} ${car.model}`}>
+                          {car.make} {car.model}
+                        </h4>
+                      </div>
+                      <div className="text-right shrink-0">
+                        {r && r.count > 0 ? (
+                          <div className="flex flex-col items-end">
+                            <span className="text-sm font-black text-amber-400 font-mono leading-none">{r.overallAvg.toFixed(1)}</span>
+                            <span className="text-[8px] text-zinc-500 font-mono mt-1">({r.count} review{r.count > 1 ? 's' : ''})</span>
+                          </div>
+                        ) : (
+                          <span className="text-[9px] text-zinc-650 font-mono uppercase font-bold">Unrated</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {r && r.count > 0 ? (
+                      <div className="space-y-2 text-[10px] font-mono">
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500 uppercase">Comfort:</span>
+                          <span className="text-slate-300 font-bold">{r.comfortAvg > 0 ? renderCompareStars(r.comfortAvg) : "—"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500 uppercase">Performance:</span>
+                          <span className="text-slate-300 font-bold">{r.perfAvg > 0 ? renderCompareStars(r.perfAvg) : "—"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500 uppercase">Fuel Econ:</span>
+                          <span className="text-slate-300 font-bold">{r.gasAvg > 0 ? renderCompareStars(r.gasAvg) : "—"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-500 uppercase">Reliability:</span>
+                          <span className="text-slate-300 font-bold">{r.reliabilityAvg > 0 ? renderCompareStars(r.reliabilityAvg) : "—"}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-4 text-center">
+                        <p className="text-[9px] text-zinc-500 lowercase font-mono">No attributes scored yet. Go to details to submit first rating!</p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
         </div>
       )}
 
@@ -840,13 +1033,92 @@ Which one is your ultimate choice? Explore and vote on Whipcheck GT!`;
                 </tr>
 
                 {/* Trivia Counts */}
-                <tr className="hover:bg-slate-950/10">
+                <tr className="border-b border-slate-800 hover:bg-slate-950/10">
                   <td className="p-3 font-medium text-slate-400 font-mono text-[11px]">Historical trivia segments</td>
                   {cars.map(car => (
                     <td key={car.id} className="p-3 text-slate-200">
                       {car.trivia?.length || 0} items
                     </td>
                   ))}
+                </tr>
+
+                {/* --- COMMUNITY ATTR RATINGS AND COMMENDATIONS --- */}
+                <tr className="bg-slate-950/70 border-b border-slate-800">
+                  <td colSpan={cars.length + 1} className="p-3 text-[10px] font-black font-mono tracking-widest text-amber-500 uppercase text-center bg-slate-950/90 shadow-inner">
+                    ★ COMMUNITY RATINGS & DRIVING ATTRIBUTES ★
+                  </td>
+                </tr>
+
+                {/* Overall Rating Score */}
+                <tr className="border-b border-slate-850/60 hover:bg-slate-950/20">
+                  <td className="p-3 font-medium text-slate-400 font-mono text-[11px]">Overall Driver Score</td>
+                  {cars.map(car => {
+                    const r = individualRatings[getNormalizedCarKey(car)];
+                    return (
+                      <td key={car.id} className="p-3">
+                        {r && r.count > 0 ? (
+                          <div className="space-y-0.5">
+                            {renderCompareStars(r.overallAvg)}
+                            <span className="text-[8.5px] text-zinc-500 font-mono block">Based on {r.count} review{r.count > 1 ? 's' : ''}</span>
+                          </div>
+                        ) : (
+                          <span className="text-zinc-600 font-mono text-[9px] uppercase">No Reviews Yet</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+
+                {/* Ride Comfort */}
+                <tr className="border-b border-slate-850/60 hover:bg-slate-950/20">
+                  <td className="p-3 font-medium text-slate-400 font-mono text-[11px]">Ride Comfort Rating</td>
+                  {cars.map(car => {
+                    const r = individualRatings[getNormalizedCarKey(car)];
+                    return (
+                      <td key={car.id} className="p-3">
+                        {r && r.comfortAvg > 0 ? renderCompareStars(r.comfortAvg) : <span className="text-zinc-600 font-mono text-[9px] uppercase">Not Rated</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+
+                {/* Power / Performance */}
+                <tr className="border-b border-slate-850/60 hover:bg-slate-950/20">
+                  <td className="p-3 font-medium text-slate-400 font-mono text-[11px]">Performance & Power</td>
+                  {cars.map(car => {
+                    const r = individualRatings[getNormalizedCarKey(car)];
+                    return (
+                      <td key={car.id} className="p-3">
+                        {r && r.perfAvg > 0 ? renderCompareStars(r.perfAvg) : <span className="text-zinc-600 font-mono text-[9px] uppercase">Not Rated</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+
+                {/* Fuel Economy */}
+                <tr className="border-b border-slate-850/60 hover:bg-slate-950/20">
+                  <td className="p-3 font-medium text-slate-400 font-mono text-[11px]">Fuel Economy Rating</td>
+                  {cars.map(car => {
+                    const r = individualRatings[getNormalizedCarKey(car)];
+                    return (
+                      <td key={car.id} className="p-3">
+                        {r && r.gasAvg > 0 ? renderCompareStars(r.gasAvg) : <span className="text-zinc-600 font-mono text-[9px] uppercase">Not Rated</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+
+                {/* Build and Reliability */}
+                <tr className="hover:bg-slate-950/20">
+                  <td className="p-3 font-medium text-slate-400 font-mono text-[11px]">Reliability & Build</td>
+                  {cars.map(car => {
+                    const r = individualRatings[getNormalizedCarKey(car)];
+                    return (
+                      <td key={car.id} className="p-3">
+                        {r && r.reliabilityAvg > 0 ? renderCompareStars(r.reliabilityAvg) : <span className="text-zinc-600 font-mono text-[9px] uppercase">Not Rated</span>}
+                      </td>
+                    );
+                  })}
                 </tr>
               </tbody>
             </table>
@@ -959,13 +1231,15 @@ Which one is your ultimate choice? Explore and vote on Whipcheck GT!`;
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => handleDeleteComment(cmt.id)}
-                      className="text-red-400 hover:text-red-300 opacity-60 hover:opacity-100 transition duration-150 p-1 cursor-pointer shrink-0"
-                      title="Remove note"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                    {(cmt.author === spotterUserName || sessionStorage.getItem("whipcheck_admin_session") === "true") && (
+                      <button
+                        onClick={() => handleDeleteComment(cmt.id)}
+                        className="text-red-400 hover:text-red-300 opacity-60 hover:opacity-100 transition duration-150 p-1 cursor-pointer shrink-0"
+                        title="Remove note"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                   <p className="text-[11px] text-zinc-300 leading-relaxed pl-5 font-sans break-words whitespace-pre-line">
                     {cmt.text}

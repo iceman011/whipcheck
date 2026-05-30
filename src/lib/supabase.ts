@@ -111,13 +111,30 @@ function deserializeRow(row: any): IdentifiedCar {
 /**
  * Fetch all vehicles from Supabase
  */
-export async function fetchSupabaseGarage(): Promise<IdentifiedCar[]> {
+export async function fetchSupabaseGarage(userId?: string): Promise<IdentifiedCar[]> {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const { data, error } = await supabase
-    .from("vehicles")
-    .select("*")
-    .order("timestamp", { ascending: false });
+  let activeUserId = userId || null;
+  if (!activeUserId) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        activeUserId = user.id;
+      }
+    } catch (e) {
+      console.warn("Could not retrieve user context on fetch", e);
+    }
+  }
+
+  let queryBuilder = supabase.from("vehicles").select("*");
+  if (activeUserId) {
+    queryBuilder = queryBuilder.eq("user_id", activeUserId);
+  } else {
+    // Return empty array to prevent leaks from other users when not logged in
+    return [];
+  }
+
+  const { data, error } = await queryBuilder.order("timestamp", { ascending: false });
 
   if (error) {
     throw error;
@@ -129,13 +146,22 @@ export async function fetchSupabaseGarage(): Promise<IdentifiedCar[]> {
 /**
  * Save or overwrite a vehicle in Supabase
  */
-export async function saveSupabaseCar(car: IdentifiedCar): Promise<void> {
+export async function saveSupabaseCar(car: IdentifiedCar, customUserId?: string): Promise<void> {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const serialized = await serializeCar(car);
-  const { error } = await supabase
+  const serialized = await serializeCar(car, customUserId);
+  let { error } = await supabase
     .from("vehicles")
     .upsert(serialized, { onConflict: "id" });
+
+  if (error && (error.message.includes("user_id") || error.message.includes("column") || error.code === "42703")) {
+    console.warn("Retrying saveSupabaseCar without user_id column...");
+    const { user_id, ...serializedNoUser } = serialized as any;
+    const retryRes = await supabase
+      .from("vehicles")
+      .upsert(serializedNoUser, { onConflict: "id" });
+    error = retryRes.error;
+  }
 
   if (error) {
     throw error;
@@ -146,9 +172,9 @@ export async function saveSupabaseCar(car: IdentifiedCar): Promise<void> {
  * Maps a plain TypeScript vehicle object to the Supabase database shape
  * Scopes to current logged in user ID if available
  */
-async function serializeCar(car: IdentifiedCar) {
-  let userId: string | null = null;
-  if (supabase) {
+async function serializeCar(car: IdentifiedCar, customUserId?: string) {
+  let userId: string | null = customUserId || null;
+  if (!userId && supabase) {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
@@ -326,13 +352,27 @@ export async function signOutUser(): Promise<void> {
 /**
  * Remove a vehicle from Supabase database
  */
-export async function removeSupabaseCar(id: string): Promise<void> {
+export async function removeSupabaseCar(id: string, userId?: string): Promise<void> {
   if (!supabase) throw new Error("Supabase is not configured.");
 
-  const { error } = await supabase
-    .from("vehicles")
-    .delete()
-    .eq("id", id);
+  let activeUserId = userId || null;
+  if (!activeUserId) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        activeUserId = user.id;
+      }
+    } catch (e) {
+      console.warn("Could not retrieve user context on remove", e);
+    }
+  }
+
+  let queryBuilder = supabase.from("vehicles").delete().eq("id", id);
+  if (activeUserId) {
+    queryBuilder = queryBuilder.eq("user_id", activeUserId);
+  }
+
+  const { error } = await queryBuilder;
 
   if (error) {
     throw error;
@@ -342,7 +382,7 @@ export async function removeSupabaseCar(id: string): Promise<void> {
 /**
  * Sync multiple cars to Supabase at once (e.g. during manual cloud backup)
  */
-export async function syncLocalGarageToCloud(cars: IdentifiedCar[]): Promise<{ successCount: number; errors: string[] }> {
+export async function syncLocalGarageToCloud(cars: IdentifiedCar[], userId?: string): Promise<{ successCount: number; errors: string[] }> {
   if (!supabase) throw new Error("Supabase is not configured.");
   if (cars.length === 0) return { successCount: 0, errors: [] };
 
@@ -351,7 +391,7 @@ export async function syncLocalGarageToCloud(cars: IdentifiedCar[]): Promise<{ s
 
   for (const car of cars) {
     try {
-      await saveSupabaseCar(car);
+      await saveSupabaseCar(car, userId);
       successCount++;
     } catch (e: any) {
       errors.push(`Failed to save ${car.make} ${car.model}: ${e.message || e}`);

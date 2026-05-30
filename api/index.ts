@@ -33,6 +33,62 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 // ----------------------------------------------------
+// USER ACCOUNT & DATABASE SCHEMAS (SERVER-SIDE)
+// ----------------------------------------------------
+interface UserRecord {
+  id: string;
+  username: string;
+  email: string;
+  passwordHash: string;
+  isVerified: boolean;
+  otp?: string;
+  otpExpires?: number;
+}
+
+const USERS_FILE = path.join(process.cwd(), "users_db.json");
+const USER_VEHICLES_FILE = path.join(process.cwd(), "user_vehicles_db.json");
+
+function readUsersDb(): Record<string, UserRecord> {
+  try {
+    if (fs.existsSync(USERS_FILE)) {
+      const content = fs.readFileSync(USERS_FILE, "utf-8");
+      return JSON.parse(content || "{}");
+    }
+  } catch (err) {
+    console.error("Error reading users database:", err);
+  }
+  return {};
+}
+
+function writeUsersDb(data: Record<string, UserRecord>) {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing users database:", err);
+  }
+}
+
+function readUserVehiclesDb(): Record<string, any[]> {
+  try {
+    if (fs.existsSync(USER_VEHICLES_FILE)) {
+      const content = fs.readFileSync(USER_VEHICLES_FILE, "utf-8");
+      return JSON.parse(content || "{}");
+    }
+  } catch (err) {
+    console.error("Error reading user vehicles database:", err);
+  }
+  return {};
+}
+
+function writeUserVehiclesDb(data: Record<string, any[]>) {
+  try {
+    fs.writeFileSync(USER_VEHICLES_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing user vehicles database:", err);
+  }
+}
+
+// ----------------------------------------------------
 // GLOBAL PERSISTENT COMMENTS STORE (SERVER-SIDE)
 // ----------------------------------------------------
 interface Comment {
@@ -40,6 +96,10 @@ interface Comment {
   author: string;
   text: string;
   timestamp: string;
+  comfort?: number;
+  gasConsumption?: number;
+  performance?: number;
+  reliability?: number;
 }
 
 const COMMENTS_FILE = path.join(process.cwd(), "comments_db.json");
@@ -91,7 +151,7 @@ app.get("/api/comments/:carId", (req, res) => {
 app.post("/api/comments/:carId", (req, res) => {
   try {
     const { carId } = req.params;
-    const { author, text } = req.body;
+    const { author, text, comfort, gasConsumption, performance, reliability } = req.body;
     if (!text || !text.trim()) {
       res.status(400).json({ error: "Comment text cannot be empty" });
       return;
@@ -106,7 +166,11 @@ app.post("/api/comments/:carId", (req, res) => {
       id: `comment-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       author: (author || "Anonymous petrolhead").trim(),
       text: text.trim(),
-      timestamp: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      comfort: typeof comfort === 'number' ? comfort : undefined,
+      gasConsumption: typeof gasConsumption === 'number' ? gasConsumption : undefined,
+      performance: typeof performance === 'number' ? performance : undefined,
+      reliability: typeof reliability === 'number' ? reliability : undefined
     };
 
     db[carId].push(newComment);
@@ -133,12 +197,342 @@ app.delete("/api/comments/:carId/:commentId", (req, res) => {
   }
 });
 
+// DELETE comments and ratings for a specific car ID or normalized key (optionally filtered by author)
+app.delete("/api/comments/:carId", (req, res) => {
+  try {
+    const { carId } = req.params;
+    const { author } = req.query;
+    const db = readCommentsDb();
+    if (db[carId]) {
+      if (author) {
+        db[carId] = db[carId].filter(c => c.author !== author);
+        if (db[carId].length === 0) {
+          delete db[carId];
+        }
+      } else {
+        delete db[carId];
+      }
+      writeCommentsDb(db);
+    }
+    res.json({ success: true, message: `Comments deleted for car: ${carId}` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete comments" });
+  }
+});
+
+// ----------------------------------------------------
+// USER ACCOUNTS & PASSWORD-BASED AUTH (SERVER-SIDE)
+// ----------------------------------------------------
+
+// User register / signup
+app.post("/api/auth/signup", (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    if (!username || !username.trim() || !email || !email.trim() || !password || !password.trim()) {
+      res.status(400).json({ error: "All account parameters (Username, Email, Password) are strictly required." });
+      return;
+    }
+
+    const db = readUsersDb();
+    const emailKey = email.trim().toLowerCase();
+    const userVal = username.trim();
+
+    // Check email uniqueness
+    const emailExists = Object.values(db).some(u => u.email === emailKey);
+    if (emailExists) {
+      res.status(400).json({ error: "An account with this email address already exists. Please sign in instead." });
+      return;
+    }
+
+    // Check username uniqueness
+    const userExists = Object.values(db).some(u => u.username.toLowerCase() === userVal.toLowerCase());
+    if (userExists) {
+      res.status(400).json({ error: "This username is already taken. Please choose a different one." });
+      return;
+    }
+
+    const uid = `usr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const generatedOtp = String(Math.floor(100000 + Math.random() * 900000));
+    const newUser: UserRecord = {
+      id: uid,
+      username: userVal,
+      email: emailKey,
+      passwordHash: password, // Simple sandbox storage
+      isVerified: false,
+      otp: generatedOtp,
+      otpExpires: Date.now() + 15 * 60 * 1000 // 15 min expiry
+    };
+
+    db[uid] = newUser;
+    writeUsersDb(db);
+
+    console.log(`\n\n============ ✉️ OUT-OF-BAND SIMULATED EMAIL DISPATCH ============`);
+    console.log(`To: ${newUser.email}`);
+    console.log(`Subject: WhipCheck Account Verification OTP`);
+    console.log(`Message: Thank you for registering under username [ ${newUser.username} ]. Your 6-digit verification pin is: [ ${generatedOtp} ]`);
+    console.log(`===============================================================\n\n`);
+
+    res.json({ 
+      success: true, 
+      otpCode: generatedOtp,
+      message: "Account registered successfully! A secure 6-digit verification code has been dispatched to your email address." 
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to handle user registration" });
+  }
+});
+
+// User login
+app.post("/api/auth/login", (req, res) => {
+  try {
+    const { loginId, password } = req.body;
+    if (!loginId || !loginId.trim() || !password || !password.id && !password.trim()) {
+      res.status(400).json({ error: "Username/Email and Password are required." });
+      return;
+    }
+
+    const db = readUsersDb();
+    const query = loginId.trim().toLowerCase();
+    const pass = password.trim();
+
+    // Find user by email or username
+    const user = Object.values(db).find(
+      u => u.email === query || u.username.toLowerCase() === query
+    );
+
+    if (!user || user.passwordHash !== pass) {
+      res.status(401).json({ error: "Invalid username/email or password." });
+      return;
+    }
+
+    // First-time login: verify using email OTP
+    if (!user.isVerified) {
+      const generatedOtp = user.otp || String(Math.floor(100000 + Math.random() * 900000)); // 6 digit OTP
+      user.otp = generatedOtp;
+      user.otpExpires = user.otpExpires || (Date.now() + 15 * 60 * 1000); // 15 min expiry
+      db[user.id] = user;
+      writeUsersDb(db);
+
+      console.log(`\n\n============ ✉️ OUT-OF-BAND SIMULATED EMAIL DISPATCH ============`);
+      console.log(`To: ${user.email}`);
+      console.log(`Subject: WhipCheck Verification Security PIN`);
+      console.log(`Message: Your 6-digit verification code is [ ${generatedOtp} ]`);
+      console.log(`===============================================================\n\n`);
+
+      res.json({
+        status: "otp_required",
+        email: user.email,
+        otpCode: generatedOtp,
+        message: "First-time Login Check: Verifying your email coordinates. A secure 6-digit OTP code has been dispatched to your email address."
+      });
+      return;
+    }
+
+    res.json({
+      status: "success",
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to handle login session" });
+  }
+});
+
+// Verify login OTP (First time check only)
+app.post("/api/auth/verify-otp", (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      res.status(400).json({ error: "Incorrect parameters. Missing email verification context." });
+      return;
+    }
+
+    const db = readUsersDb();
+    const query = email.trim().toLowerCase();
+    const code = otp.trim();
+
+    const user = Object.values(db).find(u => u.email === query);
+    if (!user) {
+      res.status(404).json({ error: "User profile not found." });
+      return;
+    }
+
+    if (!user.otp || user.otp !== code) {
+      res.status(400).json({ error: "The provided one-time verification code is incorrect. Please try again." });
+      return;
+    }
+
+    if (user.otpExpires && Date.now() > user.otpExpires) {
+      res.status(400).json({ error: "The verification code has expired. Please log in again to generate a new one." });
+      return;
+    }
+
+    // Mark as verified
+    user.isVerified = true;
+    delete user.otp;
+    delete user.otpExpires;
+    db[user.id] = user;
+    writeUsersDb(db);
+
+    res.json({
+      status: "success",
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to verify OTP code" });
+  }
+});
+
+// Resend OTP
+app.post("/api/auth/resend-otp", (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      res.status(400).json({ error: "Missing email context." });
+      return;
+    }
+
+    const db = readUsersDb();
+    const query = email.trim().toLowerCase();
+
+    const user = Object.values(db).find(u => u.email === query);
+    if (!user) {
+      res.status(404).json({ error: "User profile not found." });
+      return;
+    }
+
+    const generatedOtp = String(Math.floor(100000 + Math.random() * 900000));
+    user.otp = generatedOtp;
+    user.otpExpires = Date.now() + 15 * 60 * 1000;
+    db[user.id] = user;
+    writeUsersDb(db);
+
+    console.log(`\n\n============ ✉️ OUT-OF-BAND SIMULATED EMAIL DISPATCH ============`);
+    console.log(`To: ${user.email}`);
+    console.log(`Subject: New WhipCheck Verification Security PIN`);
+    console.log(`Message: Your fresh 6-digit verification code is [ ${generatedOtp} ]`);
+    console.log(`===============================================================\n\n`);
+
+    res.json({
+      success: true,
+      otpCode: generatedOtp,
+      message: "A fresh 6-digit verification code has been dispatched to your email address."
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to generate OTP" });
+  }
+});
+
+// Fetch server vehicles scoped to custom user ID
+app.get("/api/user/vehicles/:userId", (req, res) => {
+  try {
+    const { userId } = req.params;
+    const db = readUserVehiclesDb();
+    const list = db[userId] || [];
+    res.json({ vehicles: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve local user garage" });
+  }
+});
+
+// Save/add vehicle for a user
+app.post("/api/user/vehicles/:userId", (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { vehicle } = req.body;
+    if (!vehicle) {
+      res.status(400).json({ error: "Missing vehicle spec." });
+      return;
+    }
+
+    const db = readUserVehiclesDb();
+    if (!db[userId]) {
+      db[userId] = [];
+    }
+
+    // Filter duplicates
+    db[userId] = db[userId].filter(c => c.id !== vehicle.id);
+    db[userId].unshift(vehicle);
+
+    writeUserVehiclesDb(db);
+    res.json({ success: true, vehicles: db[userId] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to persist user garage." });
+  }
+});
+
+// Delete vehicle from a user's cloud garage record
+app.delete("/api/user/vehicles/:userId/:vehicleId", (req, res) => {
+  try {
+    const { userId, vehicleId } = req.params;
+    const db = readUserVehiclesDb();
+    if (db[userId]) {
+      db[userId] = db[userId].filter(c => c.id !== vehicleId);
+      writeUserVehiclesDb(db);
+    }
+    res.json({ success: true, vehicles: db[userId] || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to remove user car" });
+  }
+});
+
+// ----------------------------------------------------
+// IDENTIFY CACHE STORE (SERVER-SIDE)
+// ----------------------------------------------------
+const IDENTIFY_CACHE_FILE = path.join(process.cwd(), "identify_cache.json");
+
+function readIdentifyCache(): Record<string, any> {
+  try {
+    if (fs.existsSync(IDENTIFY_CACHE_FILE)) {
+      const content = fs.readFileSync(IDENTIFY_CACHE_FILE, "utf-8");
+      return JSON.parse(content || "{}");
+    }
+  } catch (err) {
+    console.error("Error reading identify cache:", err);
+  }
+  return {};
+}
+
+function writeIdentifyCache(data: Record<string, any>) {
+  try {
+    fs.writeFileSync(IDENTIFY_CACHE_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing identify cache:", err);
+  }
+}
+
 // Identify car from base64 image using Gemini
 app.post("/api/identify-car", async (req, res) => {
   try {
     const { image, imageUrl } = req.body;
     if (!image && !imageUrl) {
       res.status(400).json({ error: "Missing image or imageUrl data" });
+      return;
+    }
+
+    // Generate robust cache key
+    let cacheKey = "";
+    if (imageUrl) {
+      cacheKey = `url_${imageUrl.trim()}`;
+    } else if (image) {
+      const imgStr = String(image);
+      const signature = imgStr.length > 100 
+        ? imgStr.substring(0, 50) + imgStr.substring(imgStr.length - 50) 
+        : imgStr;
+      cacheKey = `img_${imgStr.length}_${signature.replace(/[^a-zA-Z0-9]/g, "")}`;
+    }
+
+    const currentCache = readIdentifyCache();
+    if (cacheKey && currentCache[cacheKey]) {
+      console.log(`[Identify Cache Hit] Serving cached result for key sig: ${cacheKey.substring(0, 40)}...`);
+      res.json(currentCache[cacheKey]);
       return;
     }
 
@@ -246,12 +640,67 @@ If the image does not seem to contain or represent an automobile, please set "is
     }
 
     const data = JSON.parse(textResult.trim());
+
+    // Write to persistent identification cache
+    if (cacheKey) {
+      const currentCache = readIdentifyCache();
+      currentCache[cacheKey] = data;
+      writeIdentifyCache(currentCache);
+    }
+
     res.json(data);
   } catch (error: any) {
     console.error("Error analyzing car image:", error);
     res.status(500).json({ 
       error: error.message || "An error occurred during car image identification." 
     });
+  }
+});
+
+// Clear/Reset all local JSON databases (Users, vehicles, comments)
+app.post("/api/admin/reset-database", (req, res) => {
+  try {
+    writeUsersDb({});
+    writeUserVehiclesDb({});
+    writeCommentsDb({});
+    writeIdentifyCache({});
+    res.json({ success: true, message: "All app server-side database files have been successfully reset and initialized!" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to clear databases." });
+  }
+});
+
+// Fetch detailed database stats and raw values for server-side persistence sandbox
+app.get("/api/admin/database-stats", (req, res) => {
+  try {
+    const users = readUsersDb();
+    const vehicles = readUserVehiclesDb();
+    const comments = readCommentsDb();
+
+    let totalVehiclesCount = 0;
+    Object.values(vehicles).forEach(vList => {
+      totalVehiclesCount += (vList || []).length;
+    });
+
+    let totalCommentsCount = 0;
+    const commentDetails: Record<string, number> = {};
+    Object.entries(comments).forEach(([carId, cList]) => {
+      totalCommentsCount += (cList || []).length;
+      commentDetails[carId] = (cList || []).length;
+    });
+
+    res.json({
+      usersCount: Object.keys(users).length,
+      vehiclesUserCount: Object.keys(vehicles).length,
+      totalVehiclesCount,
+      totalCommentsCount,
+      commentDetails,
+      rawUsers: Object.values(users).map(u => ({ id: u.id, username: u.username, email: u.email, isVerified: u.isVerified })),
+      rawVehicles: vehicles,
+      rawComments: comments
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve sandbox database statistics." });
   }
 });
 
