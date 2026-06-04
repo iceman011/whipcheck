@@ -301,7 +301,11 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
     return sessionStorage.getItem("whipcheck_admin_session") === "true";
   });
+  const [adminUsernameInput, setAdminUsernameInput] = useState<string>("");
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>("");
+  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data'>('db');
+  const [adminDbStats, setAdminDbStats] = useState<any>(null);
+  const [adminDbStatsLoading, setAdminDbStatsLoading] = useState<boolean>(false);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [customSupabaseUrl, setCustomSupabaseUrl] = useState<string>(() => getActiveSupabaseConfig().url);
@@ -350,6 +354,14 @@ export default function App() {
     // Ensure default guest spotter alias is initialized
     if (!localStorage.getItem("whipcheck_spotter_name")) {
       localStorage.setItem("whipcheck_spotter_name", "Guest");
+    }
+
+    // Auto-fetch sandbox server database statistics if administrator session is active
+    if (sessionStorage.getItem("whipcheck_admin_session") === "true") {
+      fetch("/api/admin/database-stats")
+        .then(res => res.json())
+        .then(data => setAdminDbStats(data))
+        .catch(() => {});
     }
 
     // Load custom credentials user session first to get context
@@ -1179,10 +1191,30 @@ alter table public.comments enable row level security;
     }
   };
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const fetchAdminDbStats = async () => {
+    setAdminDbStatsLoading(true);
+    setAdminError(null);
+    try {
+      const res = await fetch("/api/admin/database-stats");
+      if (res.ok) {
+        const stats = await res.json();
+        setAdminDbStats(stats);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setAdminError(errData.error || "Failed to retrieve local sandbox database statistics.");
+      }
+    } catch (e: any) {
+      setAdminError(e.message || "Failed to retrieve local sandbox database statistics.");
+    } finally {
+      setAdminDbStatsLoading(false);
+    }
+  };
+
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const normalizedInput = adminPasswordInput.trim();
-    if (normalizedInput === "admin" || normalizedInput === "admin123") {
+    const uInput = adminUsernameInput.trim().toLowerCase();
+    const pInput = adminPasswordInput.trim();
+    if (uInput === "admin" && (pInput === "admin" || pInput === "admin123")) {
       setIsAdminLoggedIn(true);
       sessionStorage.setItem("whipcheck_admin_session", "true");
       setAdminError(null);
@@ -1190,6 +1222,9 @@ alter table public.comments enable row level security;
       const active = getActiveSupabaseConfig();
       setCustomSupabaseUrl(active.url);
       setCustomSupabaseAnonKey(active.anonKey);
+      
+      // Load current database stats right away
+      await fetchAdminDbStats();
     } else {
       setAdminError("Invalid administrator credentials. Access denied.");
     }
@@ -1198,7 +1233,9 @@ alter table public.comments enable row level security;
   const handleAdminLogout = () => {
     setIsAdminLoggedIn(false);
     sessionStorage.removeItem("whipcheck_admin_session");
+    setAdminUsernameInput("");
     setAdminPasswordInput("");
+    setAdminDbStats(null);
   };
 
   const handleSaveParameters = () => {
@@ -1734,6 +1771,7 @@ alter table public.comments enable row level security;
         setCurrentUser(data.user);
         localStorage.setItem("whipcheck_user_session", JSON.stringify(data.user));
         localStorage.setItem("whipcheck_auth_email", data.user.email);
+        localStorage.setItem("whipcheck_spotter_name", data.user.username || data.user.email);
         setAuthMessage("Success! Secure session established.");
         setAuthUsername("");
         setAuthPassword("");
@@ -1777,6 +1815,7 @@ alter table public.comments enable row level security;
         setCurrentUser(data.user);
         localStorage.setItem("whipcheck_user_session", JSON.stringify(data.user));
         localStorage.setItem("whipcheck_auth_email", data.user.email);
+        localStorage.setItem("whipcheck_spotter_name", data.user.username || data.user.email);
         setAuthMessage("Success! Access granted. Your email is now verified.");
         setAuthFormMode('signin');
         setAuthOtpCode("");
@@ -1822,6 +1861,7 @@ alter table public.comments enable row level security;
   const handleCustomLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem("whipcheck_user_session");
+    localStorage.setItem("whipcheck_spotter_name", "Guest");
     setAuthEmail("");
     setAuthFormMode('signin');
     setAuthMessage("Logged out successfully.");
@@ -1870,6 +1910,7 @@ alter table public.comments enable row level security;
   const handleUserLogout = async () => {
     setAuthLoading(true);
     try {
+      localStorage.setItem("whipcheck_spotter_name", "Guest");
       if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
         handleCustomLogout();
         // Clear Supabase as well as safe background step
@@ -3030,73 +3071,299 @@ alter table public.comments enable row level security;
                 </div>
               )}
 
-              {/* Supabase SQL Database Migration Assistance Panel */}
-              <div className="p-5 bg-gradient-to-br from-[#0c0d12] via-slate-950 to-zinc-950 border border-slate-850 rounded-2xl shadow-lg relative overflow-hidden space-y-4">
-                <div className="flex items-center justify-between">
+              {!isAdminLoggedIn ? (
+                /* CASE: ADMIN NOT LOGGED IN - show elegant Admin Login Gateway card */
+                <form 
+                  onSubmit={handleAdminLogin}
+                  className="p-5 bg-gradient-to-br from-[#0b0c10] via-slate-950 to-zinc-950 border border-slate-850 rounded-2xl shadow-lg relative overflow-hidden space-y-4"
+                >
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-xl pointer-events-none"></div>
+
                   <div className="flex items-center gap-2.5">
-                    <div className="p-2 rounded-lg bg-teal-500/10 border border-teal-500/20 text-teal-400">
-                      <Database className="h-4 w-4" />
+                    <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400">
+                      <Settings className="h-4 w-4 animate-spin-slow animate-pulse" />
                     </div>
                     <div>
-                      <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Supabase SQL Schema Setup</h3>
-                      <p className="text-[10px] text-zinc-500 uppercase font-mono mt-0.5">Database tables, comments, and RLS policies</p>
+                      <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">🛠️ Developer & Admin Gateway</h3>
+                      <p className="text-[10px] text-zinc-500 uppercase font-mono mt-0.5 font-sans">Authorized developer settings portal</p>
                     </div>
                   </div>
-                </div>
 
-                <p className="text-[10px] text-zinc-400 font-sans leading-relaxed">
-                  To sync scanned cars and live comments with your personal Supabase database, run the SQL script below inside your Supabase dashboard’s **SQL Editor**. This will automatically build the <code className="text-teal-400 bg-slate-900 px-1.5 py-0.5 rounded text-[9.5px]">vehicles</code> and <code className="text-teal-400 bg-slate-900 px-1.5 py-0.5 rounded text-[9.5px]">comments</code> tables and apply required Row Level Security.
-                </p>
+                  <p className="text-[10.5px] text-zinc-400 font-sans leading-relaxed">
+                    Authenticate with system credentials to toggle live integrations, generate schema scripts, and inspect raw cached node database tables.
+                  </p>
 
-                <div className="space-y-3">
-                  {/* Premium SQL Mode Toggle Tabs */}
-                  <div className="flex bg-slate-900/90 border border-slate-800 rounded-xl p-1 w-full font-mono text-[9px] leading-tight shadow-inner">
-                    <button
-                      type="button"
-                      onClick={() => setSqlSchemaMode('create')}
-                      className={`flex-1 py-1.5 px-2.5 rounded-lg font-bold transition duration-200 cursor-pointer text-center select-none ${
-                        sqlSchemaMode === 'create'
-                          ? 'bg-teal-500/20 text-teal-300 border border-teal-500/25 shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
-                      }`}
-                    >
-                      🚀 PRISTINE SETUP (NEW TABLES)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSqlSchemaMode('upgrade')}
-                      className={`flex-1 py-1.5 px-2.5 rounded-lg font-bold transition duration-200 cursor-pointer text-center select-none ${
-                        sqlSchemaMode === 'upgrade'
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
-                      }`}
-                    >
-                      ⚡ UPGRADE TABLES (ADD COLUMN)
-                    </button>
-                  </div>
+                  <div className="space-y-3 pt-1">
+                    <div className="space-y-1.25">
+                      <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Admin Username</label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="e.g. admin"
+                          value={adminUsernameInput}
+                          onChange={(e) => setAdminUsernameInput(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-850 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/30"
+                          required
+                        />
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                          <User className="h-3.5 w-3.5" />
+                        </div>
+                      </div>
+                    </div>
 
-                  <button
-                    onClick={handleCopySql}
-                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-teal-500/10 hover:bg-teal-600/20 border border-teal-500/35 hover:border-teal-500/60 font-mono text-[10px] font-bold text-teal-400 hover:text-white transition cursor-pointer active:scale-[0.99]"
-                  >
-                    {copiedSql ? (
-                      <>
-                        <Check className="h-4 w-4 text-emerald-400" />
-                        <span>SQL SCHEMA COPIED TO CLIPBOARD</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-4 w-4" />
-                        <span>{sqlSchemaMode === 'create' ? "COPY COMPLETE DB SQL SCHEMA" : "COPY TABLE UPGRADE / ALTER SQL"}</span>
-                      </>
+                    <div className="space-y-1.25">
+                      <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Admin Password</label>
+                      <div className="relative">
+                        <input
+                          type="password"
+                          placeholder="Enter admin password..."
+                          value={adminPasswordInput}
+                          onChange={(e) => setAdminPasswordInput(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-850 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/30"
+                          required
+                        />
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                          <Lock className="h-3.5 w-3.5" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {adminError && (
+                      <div className="p-2.5 bg-red-950/30 border border-red-500/25 text-red-100 text-[10px] leading-relaxed rounded-lg font-mono text-center">
+                        {adminError}
+                      </div>
                     )}
-                  </button>
 
-                  <div className="bg-slate-950/90 rounded-xl border border-slate-855 p-3 overflow-hidden text-left relative group">
-                    <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <span className="text-[9px] text-slate-500 font-mono bg-slate-900 py-0.5 px-1.5 rounded uppercase">Preview</span>
+                    <button
+                      type="submit"
+                      className="w-full text-xs font-bold font-mono uppercase py-2.5 rounded-xl cursor-pointer flex items-center justify-center gap-1.5 text-white bg-red-650 hover:bg-red-605 transition shadow-lg shadow-red-950/20 active:scale-[0.99]"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>Authenticate Session</span>
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                /* CASE: ADMIN LOGGED IN - display pristine tabbed dashboard layout */
+                <div className="p-5 bg-gradient-to-br from-[#0c0d12] via-slate-950 to-zinc-950 border border-slate-850 rounded-2xl shadow-lg relative overflow-hidden space-y-4">
+                  {/* Dashboard Ribbon */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-900">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 animate-pulse">
+                        <Cpu className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Administrator Terminal</h3>
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 text-[8px] font-mono font-bold uppercase select-none border border-emerald-500/30">Active</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 uppercase font-mono mt-0.5 leading-snug">Control Panel & Live Database Workspace</p>
+                      </div>
                     </div>
-                    <pre className="text-[9px] text-slate-400 font-mono max-h-40 overflow-y-auto leading-relaxed select-all">
+                    
+                    <button
+                      type="button"
+                      onClick={handleAdminLogout}
+                      className="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 font-mono text-[9.5px] uppercase flex items-center justify-center gap-1.5 cursor-pointer transition select-none shrink-0"
+                    >
+                      <LogOut className="h-3 w-3 text-red-500" />
+                      <span>End Admin Session</span>
+                    </button>
+                  </div>
+
+                  {/* Elegant Horizontal Tab Bar */}
+                  <div className="grid grid-cols-3 gap-1 bg-slate-950 border border-slate-900 rounded-xl p-1 font-mono text-[9.5px] leading-tight shadow-inner select-none">
+                    <button
+                      type="button"
+                      onClick={() => setAdminSubTab('db')}
+                      className={`py-2 px-1 rounded-lg font-bold transition flex items-center justify-center gap-1 cursor-pointer truncate ${
+                        adminSubTab === 'db'
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/25 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Database className="h-3 w-3 shrink-0" />
+                      <span>DB SETTINGS</span>
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={() => setAdminSubTab('script')}
+                      className={`py-2 px-1 rounded-lg font-bold transition flex items-center justify-center gap-1 cursor-pointer truncate ${
+                        adminSubTab === 'script'
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/25 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Code className="h-3 w-3 shrink-0" />
+                      <span>SQL SCRIPT</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminSubTab('data');
+                        fetchAdminDbStats(); // Auto-refresh when entering data tab
+                      }}
+                      className={`py-2 px-1 rounded-lg font-bold transition flex items-center justify-center gap-1 cursor-pointer truncate ${
+                        adminSubTab === 'data'
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/25 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Server className="h-3 w-3 shrink-0" />
+                      <span>CACHED DATA</span>
+                    </button>
+                  </div>
+
+                  {/* TAB CONTENT 1: DB SETTINGS */}
+                  {adminSubTab === 'db' && (
+                    <div className="space-y-4 animate-fade-in text-left">
+                      <div className="space-y-1">
+                        <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono tracking-wide">🔗 Supabase Sandbox Overrides</h4>
+                        <p className="text-[9.5px] text-zinc-500 leading-normal">Enter custom backend environments here. Leave blank to fallback to compilation settings.</p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="space-y-1.25">
+                          <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Project URL</label>
+                          <input
+                            type="text"
+                            placeholder="https://your-proj-id.supabase.co"
+                            value={customSupabaseUrl}
+                            onChange={(e) => setCustomSupabaseUrl(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/30"
+                          />
+                        </div>
+
+                        <div className="space-y-1.25">
+                          <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Service Key (Anon Key)</label>
+                          <input
+                            type="password"
+                            placeholder="eyJh... (your public anonymous key)"
+                            value={customSupabaseAnonKey}
+                            onChange={(e) => setCustomSupabaseAnonKey(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/30"
+                          />
+                        </div>
+
+                        <div className="flex gap-2.5 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={handleResetParameters}
+                            className="px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-400 font-bold font-mono uppercase text-[10px] cursor-pointer transition flex items-center gap-1.5"
+                          >
+                            Reset Defaults
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaveParameters}
+                            className="flex-1 text-[10.5px] font-bold font-mono uppercase py-2 rounded-lg cursor-pointer flex items-center justify-center gap-1.5 text-white bg-red-650 hover:bg-red-600 transition"
+                          >
+                            Apply Credentials
+                          </button>
+                        </div>
+                      </div>
+
+                      {paramFeedback && (
+                        <div className="p-3 bg-indigo-950/40 border border-indigo-500/25 rounded-xl text-indigo-300 text-[10px] leading-relaxed font-mono">
+                          {paramFeedback}
+                        </div>
+                      )}
+
+                      {/* Manual Sync operations */}
+                      <div className="pt-3 border-t border-slate-900 space-y-3">
+                        <div className="space-y-1">
+                          <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono">⚡ Supabase Direct Sync Operations</h4>
+                          <p className="text-[9.5px] text-zinc-500 leading-normal">Send current local scans and offline garage data directly into the active Supabase <code className="text-zinc-400 bg-slate-900 px-1 rounded text-[9px]">vehicles</code> database table.</p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleManualSync}
+                          disabled={isSupabaseSyncing || !isSupabaseConfigured()}
+                          className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-amber-500/10 hover:bg-amber-600/20 disabled:bg-slate-900 disabled:opacity-40 border border-amber-500/35 hover:border-amber-500/60 disabled:border-slate-800 font-mono text-[10.5px] font-bold text-amber-400 disabled:text-zinc-600 hover:text-white transition cursor-pointer active:scale-[0.99]"
+                        >
+                          {isSupabaseSyncing ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <span>SYNCHRONIZING SECURE TRANSFERS...</span>
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="h-4 w-4" />
+                              <span>FORCE-SYNC LOCAL SCANS TO SUPABASE DB</span>
+                            </>
+                          )}
+                        </button>
+
+                        {/* Sync status logging monitor */}
+                        {syncProgress && (
+                          <div className="bg-slate-950 border border-slate-900 rounded-xl p-3 overflow-hidden text-left relative">
+                            <span className="text-[8.5px] text-amber-500 font-mono font-bold uppercase block tracking-wider mb-1.5">⚡ LIVE BACKUP STATUS LOG</span>
+                            <p className="text-[9.5px] text-zinc-300 font-mono leading-relaxed whitespace-pre-wrap select-all">
+                              {syncProgress}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB CONTENT 2: SQL SCRIPT */}
+                  {adminSubTab === 'script' && (
+                    <div className="space-y-4 animate-fade-in text-left">
+                      <div className="space-y-1">
+                        <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono tracking-wide">🚀 Supabase DDL SQL Schema Migration Scripts</h4>
+                        <p className="text-[9.5px] text-zinc-500 leading-normal">Run these scripts in your Supabase dashboard SQL Editor to build conforming public tables.</p>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="flex bg-slate-900/95 border border-slate-800 rounded-xl p-1 w-full font-mono text-[9px] leading-tight shadow-inner">
+                          <button
+                            type="button"
+                            onClick={() => setSqlSchemaMode('create')}
+                            className={`flex-1 py-1.5 px-1.5 rounded-lg font-bold transition duration-200 cursor-pointer text-center select-none ${
+                              sqlSchemaMode === 'create'
+                                ? 'bg-red-500/20 text-red-300 border border-red-500/25 shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                            }`}
+                          >
+                            🚀 PRISTINE SETUP (NEW TABLES)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSqlSchemaMode('upgrade')}
+                            className={`flex-1 py-1.5 px-1.5 rounded-lg font-bold transition duration-200 cursor-pointer text-center select-none ${
+                              sqlSchemaMode === 'upgrade'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                            }`}
+                          >
+                            ⚡ UPGRADE TABLES (USER_ID COLUMN)
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleCopySql}
+                          className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-red-500/10 hover:bg-red-650/20 border border-red-500/35 hover:border-red-550/60 font-mono text-[10px] font-bold text-red-400 hover:text-white transition cursor-pointer active:scale-[0.99]"
+                        >
+                          {copiedSql ? (
+                            <>
+                              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                              <span>SQL SCHEMA COPIED TO CLIPBOARD</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-4 w-4" />
+                              <span>{sqlSchemaMode === 'create' ? "COPY COMPLETE DB SQL SCHEMA" : "COPY TABLE UPGRADE / ALTER SQL"}</span>
+                            </>
+                          )}
+                        </button>
+
+                        <div className="bg-slate-950 rounded-xl border border-slate-900 p-3 overflow-hidden text-left relative group">
+                          <pre className="text-[9px] text-zinc-400 font-mono max-h-48 overflow-y-auto leading-relaxed select-all">
 {sqlSchemaMode === 'create' ? `-- Create WhipCheck saved vehicles table on Supabase
 create table public.vehicles (
   id text primary key,
@@ -3105,7 +3372,30 @@ create table public.vehicles (
   "isCar" boolean default true,
   make text,
   model text,
-  -- ... (click Copy to get full script)
+  year integer,
+  color text,
+  transmission text,
+  drivetrain text,
+  engine text,
+  power text,
+  zeroToSixty text,
+  topSpeed text,
+  curbWeight text,
+  gasConsumption text,
+  rarityScore integer,
+  productionNumbers text,
+  heritageSummary text,
+  funFact text,
+  marketValue text,
+  latitude text,
+  longitude text,
+  spotterName text,
+  rating integer,
+  comfort integer,
+  gasSatisfaction integer,
+  performanceValue integer,
+  reliability integer,
+  user_id text
 );
 
 -- Create comments table on Supabase
@@ -3128,167 +3418,186 @@ alter table public.vehicles add column if not exists user_id text;
 -- Enforces Row Level Security constraints safely
 alter table public.vehicles enable row level security;
 alter table public.comments enable row level security;`}
-                    </pre>
-                  </div>
-                </div>
-              </div>
-
-              {/* Developer Workspace & Database Tools Panel */}
-              <div className="p-5 bg-gradient-to-br from-[#0c0d12] via-slate-950 to-zinc-950 border border-slate-850 rounded-2xl shadow-lg relative overflow-hidden space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-2 rounded-lg bg-orange-500/10 border border-orange-500/20 text-orange-400">
-                      <Settings className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">Developer Workspace & Live Sync</h3>
-                      <p className="text-[10px] text-zinc-500 uppercase font-mono mt-0.5">Supabase credentials override & server purge tools</p>
-                    </div>
-                  </div>
-                  <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase ${
-                    isSupabaseConfigured() ? "bg-emerald-950/40 text-emerald-400 border border-emerald-500/20" : "bg-amber-950/40 text-amber-500 border border-amber-500/20"
-                  }`}>
-                    {isSupabaseConfigured() ? "Supabase Configured" : "Local Database Mode"}
-                  </span>
-                </div>
-
-                <p className="text-[10px] text-zinc-400 font-sans leading-relaxed">
-                  Override the application's global Supabase connection at runtime. Enter your Supabase details below to write scans directly to your live tables.
-                </p>
-
-                {/* Database parameter fields */}
-                <div className="space-y-3 pt-1">
-                  <div className="space-y-1.25">
-                    <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Project URL</label>
-                    <input
-                      type="text"
-                      placeholder="https://your-proj-id.supabase.co"
-                      value={customSupabaseUrl}
-                      onChange={(e) => setCustomSupabaseUrl(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/30"
-                    />
-                  </div>
-
-                  <div className="space-y-1.25">
-                    <label className="text-[9px] font-bold font-mono uppercase text-slate-500 block">Supabase Service Key (Anon Key)</label>
-                    <input
-                      type="password"
-                      placeholder="eyJh... (your public anonymous key)"
-                      value={customSupabaseAnonKey}
-                      onChange={(e) => setCustomSupabaseAnonKey(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-850 rounded-lg px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/30"
-                    />
-                  </div>
-
-                  <div className="flex gap-2.5 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={handleResetParameters}
-                      className="px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-400 font-bold font-mono uppercase text-[10px] cursor-pointer transition flex items-center gap-1.5"
-                    >
-                      Reset Defaults
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSaveParameters}
-                      className="flex-1 text-[10.5px] font-bold font-mono uppercase py-2 rounded-lg cursor-pointer flex items-center justify-center gap-1.5 text-white bg-red-650 hover:bg-red-600 transition"
-                    >
-                      Apply & Connect Credentials
-                    </button>
-                  </div>
-                </div>
-
-                {/* Save Feedback notice */}
-                {paramFeedback && (
-                  <div className="p-3 bg-indigo-950/40 border border-indigo-500/25 rounded-xl text-indigo-300 text-[10px] leading-relaxed font-mono">
-                    {paramFeedback}
-                  </div>
-                )}
-
-                {/* Sub-section: Force Sync Local Cars to Supabase DB tables */}
-                <div className="pt-2 border-t border-slate-900 space-y-3">
-                  <div className="space-y-1">
-                    <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono">⚡ Supabase Direct Sync Operations</h4>
-                    <p className="text-[9.5px] text-zinc-500">Send your current local scans and offline garage data directly into the active Supabase <code className="text-zinc-400 bg-slate-900 px-1 rounded text-[9px]">vehicles</code> database table.</p>
-                  </div>
-
-                  <button
-                    onClick={handleManualSync}
-                    disabled={isSupabaseSyncing || !isSupabaseConfigured()}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-amber-500/10 hover:bg-amber-600/20 disabled:bg-slate-900 disabled:opacity-40 border border-amber-500/35 hover:border-amber-500/60 disabled:border-slate-800 font-mono text-[10.5px] font-bold text-amber-400 disabled:text-zinc-600 hover:text-white transition cursor-pointer active:scale-[0.99]"
-                  >
-                    {isSupabaseSyncing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>SYNCHRONIZING SECURE TRANSFERS...</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="h-4 w-4" />
-                        <span>FORCE-SYNC LOCAL SCANS TO SUPABASE DB</span>
-                      </>
-                    )}
-                  </button>
-
-                  {/* Sync status logging monitor */}
-                  {syncProgress && (
-                    <div className="bg-slate-950 border border-slate-900 rounded-xl p-3 overflow-hidden text-left relative">
-                      <span className="text-[8.5px] text-amber-500 font-mono font-bold uppercase block tracking-wider mb-1.5">⚡ LIVE BACKUP STATUS LOG</span>
-                      <p className="text-[9.5px] text-zinc-300 font-mono leading-relaxed whitespace-pre-wrap select-all">
-                        {syncProgress}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Sub-section: Local server files purge */}
-                <div className="pt-3 border-t border-slate-900 space-y-3">
-                  <div className="space-y-1">
-                    <h4 className="text-[10px] font-bold text-rose-500 uppercase font-mono">⚠️ Node Server Hard Reset Tools</h4>
-                    <p className="text-[9.5px] text-zinc-500">Purge local user databases (<code className="text-zinc-400 bg-slate-900 px-1 rounded text-[9px]">users_db.json</code> & <code className="text-zinc-400 bg-slate-900 px-1 rounded text-[9px]">user_vehicles_db.json</code>) on the hosting server. This wipes user accounts and forces a fresh signup OTP test.</p>
-                  </div>
-
-                  {!showWipeConfirm ? (
-                    <button
-                      onClick={() => setShowWipeConfirm(true)}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-red-950/20 hover:bg-red-950/40 border border-red-900/40 hover:border-red-800/60 font-mono text-[10.5px] font-bold text-red-400 hover:text-red-200 transition cursor-pointer active:scale-[0.99]"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      <span>WIPE SERVER FILES & RESTART OTP SIGNUP</span>
-                    </button>
-                  ) : (
-                    <div className="p-3 bg-red-950/30 border border-red-500/35 rounded-xl space-y-2.5">
-                      <p className="text-[10px] text-red-200 font-black uppercase font-mono tracking-wider">
-                        ⚠️ ARE YOU ABSOLUTELY SURE?
-                      </p>
-                      <p className="text-[9.5px] text-zinc-400 font-sans leading-normal">
-                        This permanently deletes all user accounts, vehicle scans, and comments from the node-server database files. There is absolutely no undo.
-                      </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() => setShowWipeConfirm(false)}
-                          className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 font-mono font-bold text-[9.5px] uppercase cursor-pointer transition text-center"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={handleHardResetServerDatabases}
-                          className="py-1.5 px-3 rounded-lg bg-red-600 hover:bg-red-500 text-white font-mono font-black text-[9.5px] uppercase cursor-pointer transition text-center shadow-md shadow-red-950/50"
-                        >
-                          YES, PURGE EVERYTHING
-                        </button>
+                          </pre>
+                        </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Purge status logging monitor */}
-                  {resetFeedback && (
-                    <div className="p-3 bg-red-950/30 border border-red-900/30 rounded-xl text-red-300 text-[10px] leading-relaxed font-mono">
-                      {resetFeedback}
+                  {/* TAB CONTENT 3: CACHED DATA & WIPE OPTIONS */}
+                  {adminSubTab === 'data' && (
+                    <div className="space-y-4 animate-fade-in text-left">
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono tracking-wide">📦 Live Host Database Explorer</h4>
+                          <p className="text-[9.5px] text-zinc-500 leading-normal">Direct real-time cache stats query before wipe trigger operations.</p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={fetchAdminDbStats}
+                          disabled={adminDbStatsLoading}
+                          className="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 hover:text-slate-200 font-mono text-[9px] uppercase flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${adminDbStatsLoading ? "animate-spin" : ""}`} />
+                          <span>Refresh Cache</span>
+                        </button>
+                      </div>
+
+                      {/* Display Numbers / Badges */}
+                      <div className="grid grid-cols-2 xs:grid-cols-4 gap-2 font-mono text-[10px]">
+                        <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl text-center">
+                          <span className="text-[8px] text-zinc-500 block uppercase mb-1">Accounts</span>
+                          <strong className="text-slate-200 text-sm font-black">{adminDbStats?.usersCount || 0}</strong>
+                        </div>
+                        <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl text-center">
+                          <span className="text-[8px] text-zinc-500 block uppercase mb-1">Garages</span>
+                          <strong className="text-teal-400 text-sm font-black">{adminDbStats?.vehiclesUserCount || 0}</strong>
+                        </div>
+                        <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl text-center">
+                          <span className="text-[8px] text-zinc-500 block uppercase mb-1">Vehicles</span>
+                          <strong className="text-zinc-200 text-sm font-black">{adminDbStats?.totalVehiclesCount || 0}</strong>
+                        </div>
+                        <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl text-center">
+                          <span className="text-[8px] text-zinc-500 block uppercase mb-1">Comments</span>
+                          <strong className="text-amber-400 text-sm font-black">{adminDbStats?.totalCommentsCount || 0}</strong>
+                        </div>
+                      </div>
+
+                      {/* Interactive Datasets list display */}
+                      <div className="space-y-3.5 pt-1">
+                        {/* Users browser */}
+                        <div className="space-y-1.5">
+                          <h5 className="text-[10px] font-bold text-zinc-400 uppercase font-mono tracking-wider flex items-center gap-1">👥 Registered Accounts ({adminDbStats?.usersCount || 0})</h5>
+                          {(!adminDbStats?.rawUsers || adminDbStats.rawUsers.length === 0) ? (
+                            <p className="text-[10px] text-zinc-650 font-mono italic pl-1">No accounts found in sandbox environment.</p>
+                          ) : (
+                            <div className="max-h-28 overflow-y-auto border border-slate-900 rounded-xl bg-slate-950/80 p-2.5 font-mono text-[9px] text-zinc-400 space-y-1 leading-normal select-all">
+                              {adminDbStats.rawUsers.map((u: any) => (
+                                <div key={u.id} className="pb-1 border-b border-slate-900 last:border-0 flex justify-between items-center">
+                                  <span className="text-zinc-300 font-bold">{u.username || "Anonymous"} <span className="text-zinc-500 font-normal">({u.email})</span></span>
+                                  <span className={`px-1 rounded text-[8px] ${u.isVerified ? "bg-emerald-950 text-emerald-400 border border-emerald-500/10" : "bg-amber-950 text-amber-500 border border-amber-500/10"}`}>
+                                    {u.isVerified ? "Verified" : "Pending OTP"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Vehicles Browser */}
+                        <div className="space-y-1.5">
+                          <h5 className="text-[10px] font-bold text-zinc-400 uppercase font-mono tracking-wider flex items-center gap-1">🚗 Cached Scanned Vehicles ({adminDbStats?.totalVehiclesCount || 0})</h5>
+                          {(!adminDbStats?.rawVehicles || Object.keys(adminDbStats.rawVehicles).length === 0) ? (
+                            <p className="text-[10px] text-zinc-650 font-mono italic pl-1">No scanned vehicle lists generated yet.</p>
+                          ) : (
+                            <div className="max-h-36 overflow-y-auto border border-slate-900 rounded-xl bg-slate-950/80 p-2.5 font-mono text-[9px] text-zinc-400 space-y-2 leading-normal">
+                              {Object.entries(adminDbStats.rawVehicles).map(([key, list]: [string, any]) => {
+                                const matched = adminDbStats.rawUsers?.find((x: any) => x.id === key);
+                                const ownerLabel = matched ? matched.username : `User ID: ${key}`;
+                                return (
+                                  <div key={key} className="space-y-1 pb-1.5 border-b border-slate-900 last:border-0">
+                                    <span className="text-teal-400 font-bold uppercase select-all">Garage owned by @{ownerLabel} ({list?.length || 0} cars)</span>
+                                    {(!list || list.length === 0) ? (
+                                      <p className="text-zinc-500 pl-2">Garage contains zero list models.</p>
+                                    ) : (
+                                      <ul className="list-disc pl-4 text-zinc-355 space-y-0.5 mt-0.5">
+                                        {list.map((v: any, index: number) => (
+                                          <li key={v.id || index} className="truncate">
+                                            {v.year} {v.make} {v.model} <span className="text-zinc-500 text-[8px]">({v.id})</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Comments Browser */}
+                        <div className="space-y-1.5">
+                          <h5 className="text-[10px] font-bold text-zinc-400 uppercase font-mono tracking-wider flex items-center gap-1">💬 Active Discussion Board reviews ({adminDbStats?.totalCommentsCount || 0})</h5>
+                          {(!adminDbStats?.rawComments || Object.keys(adminDbStats.rawComments).length === 0) ? (
+                            <p className="text-[10px] text-zinc-650 font-mono italic pl-1">No reviews left by testers yet.</p>
+                          ) : (
+                            <div className="max-h-32 overflow-y-auto border border-slate-900 rounded-xl bg-slate-950/80 p-2.5 font-mono text-[9px] text-zinc-400 space-y-2 leading-normal">
+                              {Object.entries(adminDbStats.rawComments).map(([carId, comments]: [string, any]) => (
+                                <div key={carId} className="space-y-1 pb-1.5 border-b border-slate-900 last:border-0">
+                                  <span className="text-amber-400 text-[8.5px] font-bold uppercase block select-all">Car: {carId}</span>
+                                  {(!comments || comments.length === 0) ? (
+                                    <p className="text-zinc-500 italic pl-2">No comments reviews registered.</p>
+                                  ) : (
+                                    <ul className="list-disc pl-4 text-zinc-355 space-y-1">
+                                      {comments.map((cm: any, ind: number) => (
+                                        <li key={cm.id || ind} className="leading-snug">
+                                          <strong className="text-zinc-400">@{cm.author}</strong>: "{cm.text}"
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* RED SERVER DATABASE HARD RESET PURGE ZONE */}
+                      <div className="pt-3 border-t border-slate-900 space-y-3">
+                        <div className="space-y-1">
+                          <h4 className="text-[10px] font-extrabold text-rose-500 uppercase font-mono tracking-wider flex items-center gap-1"><ShieldAlert className="h-3.5 w-3.5" /> Direct Hard Wipe Danger Zone</h4>
+                          <p className="text-[9.5px] text-zinc-500 leading-normal">Purge local user databases (<code className="text-zinc-400 bg-slate-900 px-1 rounded text-[9px]">users_db.json</code> & <code className="text-zinc-400 bg-slate-900 px-1 rounded text-[9px]">user_vehicles_db.json</code>) on the hosting server, wiping all assets immediately.</p>
+                        </div>
+
+                        {!showWipeConfirm ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowWipeConfirm(true)}
+                            className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-red-950/20 hover:bg-red-950/40 border border-red-900/40 hover:border-red-800/60 font-mono text-[10.5px] font-bold text-red-100 hover:text-white transition cursor-pointer active:scale-[0.99]"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            <span>WIPE SERVER FILES & RESTART OTP SIGNUP</span>
+                          </button>
+                        ) : (
+                          <div className="p-3 bg-red-950/30 border border-red-500/35 rounded-xl space-y-2.5 text-center">
+                            <p className="text-[10px] text-red-200 font-black uppercase font-mono tracking-wider">
+                              ⚠️ ARE YOU ABSOLUTELY SURE?
+                            </p>
+                            <p className="text-[9.5px] text-zinc-400 font-sans leading-normal">
+                              This permanently deletes all user accounts, vehicle scans, and comments from the node-server database files. There is absolutely no undo.
+                            </p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setShowWipeConfirm(false)}
+                                className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-zinc-400 font-mono font-bold text-[9.5px] uppercase cursor-pointer transition text-center"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleHardResetServerDatabases}
+                                className="py-1.5 px-3 rounded-lg bg-red-600 hover:bg-red-500 text-white font-mono font-black text-[9.5px] uppercase cursor-pointer transition text-center shadow-md shadow-red-950/50"
+                              >
+                                YES, PURGE EVERYTHING
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Purge status logging monitor */}
+                        {resetFeedback && (
+                          <div className="p-3 bg-red-950/30 border border-red-900/30 rounded-xl text-red-300 text-[10px] leading-relaxed font-mono">
+                            {resetFeedback}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
-              </div>
+              )}
 
             </div>
           )}
