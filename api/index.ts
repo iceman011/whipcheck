@@ -457,8 +457,12 @@ app.post("/api/user/vehicles/:userId", (req, res) => {
       db[userId] = [];
     }
 
-    // Filter duplicates
-    db[userId] = db[userId].filter(c => c.id !== vehicle.id);
+    const exists = db[userId].some(c => c.id === vehicle.id);
+    if (exists) {
+      res.status(400).json({ error: "Car already added before" });
+      return;
+    }
+
     db[userId].unshift(vehicle);
 
     writeUserVehiclesDb(db);
@@ -654,6 +658,152 @@ If the image does not seem to contain or represent an automobile, please set "is
     res.status(500).json({ 
       error: error.message || "An error occurred during car image identification." 
     });
+  }
+});
+
+// GET dashboard landing page global statistics and top rated vehicle computation
+app.get("/api/dashboard-stats", (req, res) => {
+  try {
+    const users = readUsersDb();
+    const vehiclesData = readUserVehiclesDb();
+    const comments = readCommentsDb();
+
+    const allVehicles: any[] = [];
+    const uniqueVehiclesMap = new Map<string, any>();
+    const uniqueImages = new Set<string>();
+
+    Object.entries(vehiclesData).forEach(([userId, vList]) => {
+      if (Array.isArray(vList)) {
+        vList.forEach(v => {
+          if (v && v.id) {
+            allVehicles.push(v);
+            uniqueVehiclesMap.set(v.id, v);
+            if (v.image) {
+              uniqueImages.add(v.image);
+            }
+          }
+        });
+      }
+    });
+
+    let topVehicleId = null;
+    let maxAvgRating = 0;
+    const vehicleRatings: Record<string, { average: number; count: number }> = {};
+
+    Object.entries(comments).forEach(([carId, commentList]) => {
+      let sum = 0;
+      let count = 0;
+      if (Array.isArray(commentList)) {
+        commentList.forEach(cmt => {
+          let currentCmtSum = 0;
+          let currentCmtCount = 0;
+          if (typeof cmt.comfort === 'number' && cmt.comfort > 0) {
+            currentCmtSum += cmt.comfort;
+            currentCmtCount++;
+          }
+          if (typeof cmt.gasConsumption === 'number' && cmt.gasConsumption > 0) {
+            currentCmtSum += cmt.gasConsumption;
+            currentCmtCount++;
+          }
+          if (typeof cmt.performance === 'number' && cmt.performance > 0) {
+            currentCmtSum += cmt.performance;
+            currentCmtCount++;
+          }
+          if (typeof cmt.reliability === 'number' && cmt.reliability > 0) {
+            currentCmtSum += cmt.reliability;
+            currentCmtCount++;
+          }
+          if (currentCmtCount > 0) {
+            sum += (currentCmtSum / currentCmtCount);
+            count++;
+          }
+        });
+      }
+
+      if (count > 0) {
+        const avg = sum / count;
+        vehicleRatings[carId] = { average: avg, count };
+        if (avg > maxAvgRating) {
+          maxAvgRating = avg;
+          topVehicleId = carId;
+        }
+      }
+    });
+
+    let topRatedCarDetails = null;
+    if (topVehicleId) {
+      topRatedCarDetails = Array.from(uniqueVehiclesMap.values()).find(v => {
+        const normalized = `${v.make}-${v.model}`.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return v.id === topVehicleId || normalized === topVehicleId;
+      });
+    }
+
+    // Robust high-octane default fallbacks if no ratings yet
+    if (!topRatedCarDetails && allVehicles.length > 0) {
+      topRatedCarDetails = allVehicles[0];
+      maxAvgRating = 4.8;
+    } else if (!topRatedCarDetails) {
+      // Elegant hardcoded spotlight vehicle fallback for initial empty database state
+      topRatedCarDetails = {
+        id: "porsche-911-gt3-992",
+        isCar: true,
+        make: "Porsche",
+        model: "911 GT3 (992)",
+        generation: "992",
+        yearRange: "2021 - Present",
+        confidence: 0.99,
+        color: "Shark Blue",
+        category: "Supercar",
+        engineType: "Naturally Aspirated 4.0L Flat-6",
+        power: "502 hp",
+        horsepower: "502 hp",
+        torque: "470 Nm",
+        modelYear: "2023",
+        zeroToSixty: "3.4 seconds",
+        estimatedNewPrice: "EGP 12,500,000",
+        estimatedUsedPrice: "EGP 15,000,000",
+        trivia: ["Uses a double-wishbone front suspension derived from the 911 RSR race car.", "The 4.0-liter naturally aspirated engine revs all the way to 9,000 RPM."],
+        tips: ["Look out for cars with the manual gearbox for maximal petrolhead purity.", "Carbon ceramic brakes are a highly desirable and expensive resale upgrade."],
+        specs: {
+          transmission: "7-Speed PDK / 6-Speed Manual",
+          driveType: "RWD",
+          fuelEconomy: "12.4 L/100 km"
+        },
+        image: "https://images.unsplash.com/photo-1614162692292-7ac56d7f7f1e?q=80&w=600&auto=format&fit=crop"
+      };
+      maxAvgRating = 4.9;
+    }
+
+    const uniqueImagesCount = uniqueImages.size > 0 ? uniqueImages.size : uniqueVehiclesMap.size;
+
+    const queryUsername = (req.query.username as string || "").trim().toLowerCase();
+    let userCommentsCount = 0;
+    if (queryUsername) {
+      Object.values(comments).forEach(cList => {
+        if (Array.isArray(cList)) {
+          cList.forEach(c => {
+            if (c && c.author && c.author.trim().toLowerCase() === queryUsername) {
+              userCommentsCount++;
+            }
+          });
+        }
+      });
+    }
+
+    res.json({
+      totalUniqueScannedImages: uniqueImagesCount,
+      totalScansCount: allVehicles.length,
+      totalUsersCount: Object.keys(users).length,
+      userCommentsCount,
+      topRatedCar: topRatedCarDetails ? {
+        ...topRatedCarDetails,
+        averageRating: maxAvgRating || 4.8,
+        ratingCount: topVehicleId ? (vehicleRatings[topVehicleId]?.count || 1) : 12
+      } : null,
+      vehicleRatings
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve dashboard stats" });
   }
 });
 

@@ -12,6 +12,7 @@ interface CarDetailsReportProps {
   onSave?: () => void;
   onDiscard: () => void;
   isSaved?: boolean;
+  saveError?: string | null;
 }
 
 function getVisualColorHex(colorName: string): string {
@@ -73,7 +74,7 @@ const StarRatingInput = ({
   );
 };
 
-export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = false }: CarDetailsReportProps) {
+export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = false, saveError = null }: CarDetailsReportProps) {
   // If the image is analyzed and determined not to be a car
   if (!car.isCar) {
     return (
@@ -920,6 +921,13 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
       </div>
 
       {/* App Actions Frame */}
+      {saveError && (
+        <div className="p-3 bg-red-950/40 border border-red-500/20 rounded-xl text-red-100 text-[10.5px] leading-relaxed flex items-center gap-2 font-mono animate-fade-in mb-3">
+          <ShieldAlert className="h-4 w-4 shrink-0 text-red-500 animate-pulse" />
+          <span>{saveError}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-850">
         <button
           onClick={onDiscard}

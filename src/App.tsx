@@ -147,8 +147,11 @@ export function getGarageStorageKey(user: any): string {
 }
 
 export default function App() {
-  // Mobile UI Tabs: 'scan' | 'garage' | 'account'
-  const [activeTab, setActiveTab] = useState<'scan' | 'garage' | 'account'>('scan');
+  // Mobile UI Tabs: 'dashboard' | 'scan' | 'garage' | 'account'
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'scan' | 'garage' | 'account'>('dashboard');
+
+  // Garage and saving errors validation messages
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Sport tuning dashboard state
   const [currThemeId, setCurrThemeId] = useState<string>(() => {
@@ -296,6 +299,39 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState<string>("");
   const [authConfirmPassword, setAuthConfirmPassword] = useState<string>("");
   const [devOtpCode, setDevOtpCode] = useState<string>("");
+
+  // Dashboard Stats States (Placed below currentUser to respect scoping boundaries)
+  const [dashboardStats, setDashboardStats] = useState<{
+    totalUniqueScannedImages: number;
+    totalScansCount: number;
+    totalUsersCount: number;
+    userCommentsCount: number;
+    topRatedCar: IdentifiedCar & { averageRating: number; ratingCount: number } | null;
+  } | null>(null);
+  const [isLoadingDashboard, setIsLoadingDashboard] = useState(false);
+
+  const fetchDashboardStats = async () => {
+    setIsLoadingDashboard(true);
+    try {
+      const activeName = currentUser 
+        ? (currentUser.username || currentUser.email || currentUser.id) 
+        : (localStorage.getItem("whipcheck_spotter_name") || "Guest");
+      
+      const res = await fetch(`/api/dashboard-stats?username=${encodeURIComponent(activeName)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDashboardStats(data);
+      }
+    } catch (err) {
+      console.error("Failed to load dashboard stats", err);
+    } finally {
+      setIsLoadingDashboard(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDashboardStats();
+  }, [currentUser, garage, activeTab]);
 
   // Admin Gateway and Live Parameters States
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
@@ -662,43 +698,56 @@ export default function App() {
   // Sync garage with localstorage and cloud
   const saveToGarage = async (car: IdentifiedCar) => {
     if (!car) return;
+    setSaveError(null);
     const key = getGarageStorageKey(currentUser);
     const exists = garage.some(c => c.id === car.id);
-    if (!exists) {
-      const updated = [car, ...garage];
-      setGarage(updated);
-      localStorage.setItem(key, JSON.stringify(updated));
+    if (exists) {
+      setSaveError("Car already added before");
+      return;
+    }
 
-      // Synchronize to the custom user server if available
-      if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
-        try {
-          setIsSupabaseSyncing(true);
-          await fetch(`/api/user/vehicles/${currentUser.id}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ vehicle: car })
-          });
-          setSupabaseStatus("synced");
-        } catch (err) {
-          console.error("Live Cust Auth Save Failed:", err);
-        } finally {
-          setIsSupabaseSyncing(false);
+    const updated = [car, ...garage];
+    setGarage(updated);
+    localStorage.setItem(key, JSON.stringify(updated));
+
+    // Synchronize to the custom user server if available
+    if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
+      try {
+        setIsSupabaseSyncing(true);
+        const response = await fetch(`/api/user/vehicles/${currentUser.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vehicle: car })
+        });
+        if (!response.ok) {
+          const resData = await response.json();
+          if (resData.error === "Car already added before") {
+            setSaveError("Car already added before");
+            setGarage(garage);
+            localStorage.setItem(key, JSON.stringify(garage));
+            return;
+          }
         }
+        setSupabaseStatus("synced");
+      } catch (err) {
+        console.error("Live Cust Auth Save Failed:", err);
+      } finally {
+        setIsSupabaseSyncing(false);
       }
+    }
 
-      // Synchronize in the cloud synchronously if credentials set (backward compatibility - registered users only)
-      if (currentUser && isSupabaseConfigured()) {
-        try {
-          setIsSupabaseSyncing(true);
-          await saveSupabaseCar(car);
-          setSupabaseStatus("synced");
-        } catch (err: any) {
-          console.error("Live Cloud Sync Failed:", err);
-          setSupabaseStatus("error");
-          setSupabaseError(`Save failed: ${err.message || err}`);
-        } finally {
-          setIsSupabaseSyncing(false);
-        }
+    // Synchronize in the cloud synchronously if credentials set (backward compatibility - registered users only)
+    if (currentUser && isSupabaseConfigured()) {
+      try {
+        setIsSupabaseSyncing(true);
+        await saveSupabaseCar(car);
+        setSupabaseStatus("synced");
+      } catch (err: any) {
+        console.error("Live Cloud Sync Failed:", err);
+        setSupabaseStatus("error");
+        setSupabaseError(`Save failed: ${err.message || err}`);
+      } finally {
+        setIsSupabaseSyncing(false);
       }
     }
   };
@@ -982,6 +1031,7 @@ export default function App() {
     setImageUrl(null);
     setIdentifiedCar(null);
     setErrorMsg(null);
+    setSaveError(null);
     setScanStep('idle');
     setUrlInput("");
     stopCamera();
@@ -2072,6 +2122,250 @@ alter table public.comments enable row level security;
             </div>
           )}
           
+          {/* TAB 0: DASHBOARD LANDING SCREEN */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-5 animate-fade-in">
+              {/* Header Title */}
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <h2 className="text-sm font-black tracking-wider text-slate-100 font-display uppercase tracking-wider">Spotter Station Dashboard</h2>
+                  <p className="text-[10px] text-slate-500 uppercase font-mono">Performance Hub & Spotter Insights</p>
+                </div>
+                <button
+                  onClick={fetchDashboardStats}
+                  disabled={isLoadingDashboard}
+                  className="p-1 px-2.5 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer text-[10px] font-mono flex items-center gap-1 uppercase font-bold text-center"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isLoadingDashboard ? 'animate-spin' : ''}`} />
+                  <span>Sync Stats</span>
+                </button>
+              </div>
+
+              {/* Status Welcome Hero */}
+              <div className="p-4 rounded-2xl border border-slate-850 bg-gradient-to-br from-slate-950 to-slate-900 space-y-3 relative overflow-hidden shadow-lg shadow-black/40">
+                {/* Background highlight */}
+                <div className="absolute top-0 right-0 w-36 h-36 rounded-full opacity-10 bg-radial filter blur-xl pointer-events-none" style={{ background: activeTheme.colorHex }}></div>
+                
+                <div className="flex items-center gap-3 relative z-10">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xs font-black font-mono border shadow-md uppercase shrink-0 ${activeTheme.primaryText} ${activeTheme.accentBorder} bg-black/40`}>
+                    {currentUser ? (currentUser.username || currentUser.email || "U")[0] : "G"}
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-mono text-zinc-500 uppercase block leading-none font-bold mb-0.5">Active Spotter Profile</span>
+                    <h1 className="text-sm font-bold text-slate-100 tracking-tight font-display line-clamp-1">
+                      {currentUser ? (currentUser.username || currentUser.email) : "Guest Spotter"}
+                    </h1>
+                  </div>
+                </div>
+
+                {/* Spotter Class Badge */}
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-900">
+                  <div>
+                    <span className="text-[9px] font-mono text-zinc-500 uppercase block pl-0.5 mb-1">Spotter Status Level</span>
+                    <span className={`inline-flex items-center gap-1 text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded border ${
+                      garage.length >= 3 && (dashboardStats?.userCommentsCount || 0) >= 2
+                        ? "text-yellow-400 bg-yellow-950/20 border-yellow-500/30"
+                        : "text-slate-400 bg-slate-900 border-slate-800"
+                    }`}>
+                      {garage.length >= 3 && (dashboardStats?.userCommentsCount || 0) >= 2 ? (
+                        <>
+                          <Sparkles className="h-3 w-3 text-yellow-400 animate-pulse animate-duration-1000" />
+                          <span>Senior Spotter</span>
+                        </>
+                      ) : (
+                        <>
+                          <Cpu className="h-3 w-3 text-slate-450" />
+                          <span>Junior Spotter</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-[9px] font-mono text-zinc-500 uppercase block pl-0.5 mb-1">My Activity Logging</span>
+                    <p className="text-[10px] text-zinc-300 font-mono pl-0.5">
+                      <strong className="text-slate-100 font-extrabold">{garage.length}</strong> Garage cars
+                      {" • "}
+                      <strong className="text-slate-100 font-extrabold">{dashboardStats?.userCommentsCount || 0}</strong> review{ (dashboardStats?.userCommentsCount || 0) !== 1 ? "s" : "" }
+                    </p>
+                  </div>
+                </div>
+
+                {/* Level Up Progress Bars / Checklist */}
+                <div className="bg-black/40 p-3 rounded-xl border border-slate-900/80 space-y-2.5">
+                  <h4 className="text-[9px] font-black uppercase text-amber-400 tracking-wider font-mono">Senior Class Advancement Meter</h4>
+                  
+                  {/* Garage Requirement progress */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[9px] font-mono text-zinc-400">
+                      <span>1. Garage spot verification (Needs 3+)</span>
+                      <span className="font-bold text-slate-200">{garage.length} / 3</span>
+                    </div>
+                    <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-900">
+                      <div 
+                        className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.min((garage.length / 3) * 100, 100)}%` }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  {/* Feedback Requirement progress */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[9px] font-mono text-zinc-400">
+                      <span>2. Expert feedback written (Needs 2+)</span>
+                      <span className="font-bold text-slate-200">{dashboardStats?.userCommentsCount || 0} / 2</span>
+                    </div>
+                    <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-900">
+                      <div 
+                        className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.min(((dashboardStats?.userCommentsCount || 0) / 2) * 100, 100)}%` }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  {/* Recommendation block */}
+                  <div className="text-[9.5px] leading-relaxed text-slate-450 font-sans border-t border-slate-900/60 pt-2 flex items-start gap-1.5">
+                    <HelpCircle className="h-3.5 w-3.5 text-zinc-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-slate-350 block uppercase text-[8px] tracking-wide font-mono mb-0.5">Recommendations:</span>
+                      {garage.length >= 3 && (dashboardStats?.userCommentsCount || 0) >= 2 ? (
+                        <p className="text-emerald-400">
+                          Outstanding! You have earned your <strong>Senior Spotter</strong> rating. Keep logging rare vehicle configs and writing driving reports to assist the community database growth!
+                        </p>
+                      ) : (
+                        <p className="text-zinc-300">
+                          To earn your Senior status, make sure to:
+                          {garage.length < 3 && ` 🛠️ Scan and save ${3 - garage.length} more pristine car image(s) to your garage.`}
+                          {(dashboardStats?.userCommentsCount || 0) < 2 && ` 📝 Add ${2 - (dashboardStats?.userCommentsCount || 0)} more driving/attribute reviews on scanned vehicle pages.`}
+                          {" Also keep scanning rare cars that hit the streets which have never been added to our application to help advance statistics!"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Unique scanned image dashboard statistics */}
+              <div className="grid grid-cols-2 gap-3 font-mono">
+                {/* Total Unique Scanned Images regardless of owner user */}
+                <div className="bg-slate-900/30 p-3 rounded-xl border border-slate-850 flex flex-col justify-between">
+                  <div>
+                    <span className="text-[8px] text-zinc-500 uppercase tracking-wider block font-bold leading-none mb-1">Unique Scanned Images</span>
+                    <h3 className="text-lg font-black text-slate-100 tracking-tight">
+                      {dashboardStats ? dashboardStats.totalUniqueScannedImages : 0}
+                    </h3>
+                  </div>
+                  <p className="text-[9.5px] text-slate-450 leading-tight mt-1.5">
+                    Total count of unique physical files/images spotted across all users.
+                  </p>
+                </div>
+
+                <div className="bg-slate-900/30 p-3 rounded-xl border border-slate-850 flex flex-col justify-between">
+                  <div>
+                    <span className="text-[8px] text-zinc-500 uppercase tracking-wider block font-bold leading-none mb-1">Community Database Spots</span>
+                    <h3 className="text-lg font-black text-slate-100 tracking-tight">
+                      {dashboardStats ? dashboardStats.totalScansCount : 0}
+                    </h3>
+                  </div>
+                  <p className="text-[9.5px] text-slate-450 leading-tight mt-1.5">
+                    Sum total of all spots logged across the collective database.
+                  </p>
+                </div>
+              </div>
+
+              {/* Interactive Module: Spotlight TOP RATED COMMUNITY VEHICLE */}
+              {dashboardStats && dashboardStats.topRatedCar && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5 px-0.5">
+                    <Sparkles className="h-3.5 w-3.5 text-yellow-450 shrink-0" />
+                    <h3 className="text-xs font-black text-slate-200 font-display uppercase tracking-wider">Spotlight: Top Rated Model</h3>
+                  </div>
+                  
+                  <div className="rounded-2xl border border-slate-850/80 bg-slate-950 overflow-hidden relative shadow-md">
+                    {/* Immersive cover photo */}
+                    <div className="relative h-44 bg-slate-900">
+                      <img
+                        src={dashboardStats.topRatedCar.image}
+                        alt={`${dashboardStats.topRatedCar.make} ${dashboardStats.topRatedCar.model}`}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent"></div>
+                      
+                      <div className="absolute top-3 right-3 flex items-center gap-1 bg-yellow-450/15 backdrop-blur-md px-2.5 py-0.5 text-xs text-yellow-400 border border-yellow-500/25 rounded-full font-mono font-black shadow-lg">
+                        ★ {dashboardStats.topRatedCar.averageRating.toFixed(1)} / 5
+                      </div>
+
+                      <div className="absolute bottom-3 left-4">
+                        <span className="text-[8px] font-mono uppercase bg-emerald-950/50 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded mb-1 inline-block">
+                          {dashboardStats.topRatedCar.category}
+                        </span>
+                        <h4 className="text-base font-black text-white uppercase leading-none font-display">
+                          {dashboardStats.topRatedCar.modelYear} {dashboardStats.topRatedCar.make} {dashboardStats.topRatedCar.model}
+                        </h4>
+                      </div>
+                    </div>
+
+                    {/* Quick attributes list */}
+                    <div className="p-3.5 space-y-3 font-mono text-[10px]">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-zinc-400 border-b border-slate-900 pb-2.5">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Powertrain:</span>
+                          <strong className="text-slate-200 text-right line-clamp-1 truncate max-w-[100px]">{dashboardStats.topRatedCar.engineType}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Horsepower:</span>
+                          <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.horsepower || dashboardStats.topRatedCar.power}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">0-100 km/h:</span>
+                          <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.zeroToSixty}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Market (EGP):</span>
+                          <strong className="text-pink-400 text-right font-bold">{dashboardStats.topRatedCar.estimatedUsedPrice}</strong>
+                        </div>
+                      </div>
+
+                      {/* Actions to inspect model */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-[8.5px] text-zinc-500 uppercase leading-none">
+                          Based on {dashboardStats.topRatedCar.ratingCount} reviews
+                        </span>
+                        <button
+                          onClick={() => {
+                            setSelectedGarageCar(dashboardStats.topRatedCar);
+                            setActiveTab('garage');
+                          }}
+                          className={`px-3 py-1.5 ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-[9px] rounded-lg tracking-wider transition uppercase cursor-pointer flex items-center gap-1`}
+                        >
+                          <span>Inspect Model Spec Sheet</span>
+                          <ChevronRight className="h-3 w-3 text-black font-black" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Call to action scanning block */}
+              <div className={`p-4 rounded-2xl border ${activeTheme.accentBorder} bg-[#08090d]/80 space-y-2shadow-md`}>
+                <h4 className="text-xs font-bold text-slate-100 font-display uppercase tracking-wide">Ready to expand your collection?</h4>
+                <p className="text-[10px] text-slate-405 leading-normal">
+                  Put Whipcheck GT's AI Vision capabilities to work. Snap or upload any vehicle profile instantly to review specifications, resale values, and add to your garage.
+                </p>
+                <div className="pt-2">
+                  <button
+                    onClick={() => setActiveTab('scan')}
+                    className={`w-full ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-900 font-bold text-xs py-2.5 rounded-xl transition cursor-pointer font-sans uppercase tracking-wider`}
+                  >
+                    🚀 Trigger Vision Neural Core
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* TAB 1: VISION SCANNER SCREEN */}
           {activeTab === 'scan' && (
             <div className="space-y-5">
@@ -2365,6 +2659,7 @@ alter table public.comments enable row level security;
                     onSave={() => saveToGarage(identifiedCar)}
                     onDiscard={triggerReset}
                     isSaved={garage.some(c => c.id === identifiedCar.id)}
+                    saveError={saveError}
                   />
                 </div>
               )}
@@ -3644,6 +3939,17 @@ alter table public.comments enable row level security;`}
         <footer className="mt-auto bg-black/95 backdrop-blur-md border-t border-slate-850 p-3 shrink-0 relative z-20">
           <div className="flex justify-around items-center max-w-md mx-auto">
             
+            {/* Nav item 1 (Dashboard) */}
+            <button
+              onClick={() => { setActiveTab('dashboard'); setSelectedGarageCar(null); }}
+              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'dashboard' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
+            >
+              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'dashboard' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
+                <Compass className="h-4 w-4" />
+              </div>
+              <span className="text-[9px] font-mono uppercase tracking-widest font-semibold text-center">Dashboard</span>
+            </button>
+
             {/* Nav item 2 (Center Big Button) */}
             <button
               onClick={() => { setActiveTab('scan'); setSelectedGarageCar(null); }}
