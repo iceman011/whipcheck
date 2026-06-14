@@ -452,7 +452,8 @@ export default function CarDetailsReport({
   const getShareLink = () => {
     try {
       const payload = btoa(unescape(encodeURIComponent(JSON.stringify(car))));
-      return `${window.location.origin}${window.location.pathname}?share_car=${payload}`;
+      const safePayload = payload.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return `${window.location.origin}${window.location.pathname}?share_car=${safePayload}`;
     } catch {
       return `${window.location.origin}${window.location.pathname}`;
     }

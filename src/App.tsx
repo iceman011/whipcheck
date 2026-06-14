@@ -213,6 +213,7 @@ export default function App() {
 
       await Promise.all(
         uniqueKeys.map(async (key) => {
+          if (!key) return;
           try {
             if (isSupabaseConfigured() && supabase) {
               const { data, error } = await supabase
@@ -277,14 +278,28 @@ export default function App() {
   
   const handleToggleCompare = (car: IdentifiedCar, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (selectedPlanTier === 'chiptuning') {
+      setCompareError("🔒 Vehicle comparison is a Premium feature. Upgrade to Teen Passion to compare cars!");
+      setTimeout(() => setCompareError(null), 5000);
+      handleOpenPlans('teen_passion');
+      return;
+    }
+
     setCompareList((prev) => {
       const exists = prev.some((c) => c.id === car.id);
       if (exists) {
         return prev.filter((c) => c.id !== car.id);
       } else {
-        if (prev.length >= 3) {
-          setCompareError("Maximum of 3 vehicles can be compared at once.");
-          setTimeout(() => setCompareError(null), 3500);
+        const maxLimit = selectedPlanTier === 'teen_passion' ? 2 : 3;
+        if (prev.length >= maxLimit) {
+          if (selectedPlanTier === 'teen_passion') {
+            setCompareError("🔒 Teen Passion limits comparisons to 2 vehicles. Upgrade to Gasoline Gold to compare 3 vehicles!");
+            setTimeout(() => setCompareError(null), 5000);
+            handleOpenPlans('gasoline_gold');
+          } else {
+            setCompareError("Maximum of 3 vehicles can be compared at once.");
+            setTimeout(() => setCompareError(null), 3500);
+          }
           return prev;
         }
         return [...prev, car];
@@ -595,21 +610,23 @@ export default function App() {
     if (parsedUser) {
       setCurrentUser(parsedUser);
       // Trigger custom garage sync
-      fetch(`/api/user/vehicles/${parsedUser.id}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.vehicles) {
-            setGarage(data.vehicles);
-            localStorage.setItem(getGarageStorageKey(parsedUser), JSON.stringify(data.vehicles));
-            // Invalidate/clear guest local garage
-            localStorage.removeItem("car_spotter_garage_v2_guest");
-            localStorage.removeItem("car_spotter_garage_v2");
-            setSupabaseStatus("synced");
-          }
-        })
-        .catch(err => {
-          console.warn("Failed to complete custom user garage sync on boot", err);
-        });
+      if (parsedUser.id) {
+        fetch(`/api/user/vehicles/${encodeURIComponent(parsedUser.id)}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data && data.vehicles) {
+              setGarage(data.vehicles);
+              localStorage.setItem(getGarageStorageKey(parsedUser), JSON.stringify(data.vehicles));
+              // Invalidate/clear guest local garage
+              localStorage.removeItem("car_spotter_garage_v2_guest");
+              localStorage.removeItem("car_spotter_garage_v2");
+              setSupabaseStatus("synced");
+            }
+          })
+          .catch(err => {
+            console.warn("Failed to complete custom user garage sync on boot", err);
+          });
+      }
     }
 
     // Cloud sync is handled reactively by the authentication session listener below
@@ -641,7 +658,11 @@ export default function App() {
       const sharedCompareData = params.get("share_compare");
 
       if (sharedCarData) {
-        const decodedCar = JSON.parse(decodeURIComponent(escape(atob(sharedCarData))));
+        let base64 = sharedCarData.replace(/-/g, "+").replace(/_/g, "/");
+        while (base64.length % 4) {
+          base64 += "=";
+        }
+        const decodedCar = JSON.parse(decodeURIComponent(escape(atob(base64))));
         if (decodedCar && decodedCar.id) {
           setIdentifiedCar(decodedCar);
           setScanStep('done');
@@ -651,7 +672,11 @@ export default function App() {
           window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
         }
       } else if (sharedCompareData) {
-        const decodedCars = JSON.parse(decodeURIComponent(escape(atob(sharedCompareData))));
+        let base64 = sharedCompareData.replace(/-/g, "+").replace(/_/g, "/");
+        while (base64.length % 4) {
+          base64 += "=";
+        }
+        const decodedCars = JSON.parse(decodeURIComponent(escape(atob(base64))));
         if (Array.isArray(decodedCars) && decodedCars.length > 0) {
           setCompareList(decodedCars);
           setShowCompareActive(true);
@@ -844,6 +869,16 @@ export default function App() {
   const saveToGarage = async (car: IdentifiedCar) => {
     if (!car) return;
     setSaveError(null);
+
+    const limit = selectedPlanTier === 'chiptuning' ? 3 : selectedPlanTier === 'teen_passion' ? 15 : Infinity;
+    if (garage.length >= limit) {
+      const planNameCurrent = selectedPlanTier === 'chiptuning' ? 'Chiptuning Free' : 'Teen Passion';
+      const planNameNext = selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold';
+      setSaveError(`🔒 Your active ${planNameCurrent} plan limits your garage to ${limit} vehicles. Upgrade to expand your co-pilot collection!`);
+      handleOpenPlans(planNameNext);
+      return;
+    }
+
     const key = getGarageStorageKey(currentUser);
     const exists = garage.some(c => c.id === car.id);
     if (exists) {
@@ -859,7 +894,7 @@ export default function App() {
     if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
       try {
         setIsSupabaseSyncing(true);
-        const response = await fetch(`/api/user/vehicles/${currentUser.id}`, {
+        const response = await fetch(`/api/user/vehicles/${encodeURIComponent(currentUser.id)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ vehicle: car })
@@ -981,7 +1016,7 @@ export default function App() {
     if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
       try {
         setIsSupabaseSyncing(true);
-        await fetch(`/api/user/vehicles/${currentUser.id}/${id}`, {
+        await fetch(`/api/user/vehicles/${encodeURIComponent(currentUser.id)}/${encodeURIComponent(id)}`, {
           method: "DELETE"
         });
         setSupabaseStatus("synced");
@@ -1087,10 +1122,10 @@ export default function App() {
   };
 
   const checkScanLimitReached = () => {
-    if (selectedPlanTier === 'chiptuning' && scansCountUsed >= 3) {
+    if (selectedPlanTier === 'chiptuning' && (scansCountUsed >= 3 || garage.length >= 3)) {
       return true;
     }
-    if (selectedPlanTier === 'teen_passion' && scansCountUsed >= 15) {
+    if (selectedPlanTier === 'teen_passion' && (scansCountUsed >= 15 || garage.length >= 15)) {
       return true;
     }
     return false;
@@ -1669,7 +1704,7 @@ alter table public.comments enable row level security;
       }
 
       setAccountSyncProgress("📥 Loading active vehicles from the node-server database...");
-      const res = await fetch(`/api/user/vehicles/${userId}`);
+      const res = await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`);
       let serverCars: IdentifiedCar[] = [];
       if (res.ok) {
         const data = await res.json();
@@ -1722,7 +1757,7 @@ alter table public.comments enable row level security;
         if (unsyncedToNode.length > 0) {
           await Promise.all(
             unsyncedToNode.map(async (car) => {
-              await fetch(`/api/user/vehicles/${userId}`, {
+              await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ vehicle: car })
@@ -1732,7 +1767,7 @@ alter table public.comments enable row level security;
         }
 
         // Fetch refreshed garage from custom node database
-        const refreshNodeRes = await fetch(`/api/user/vehicles/${userId}`);
+        const refreshNodeRes = await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`);
         let finalCars = uniqueVehicles;
         if (refreshNodeRes.ok) {
           const d = await refreshNodeRes.json();
@@ -1871,7 +1906,7 @@ alter table public.comments enable row level security;
       if (uniqueVehicles.length > 0) {
         await Promise.all(
           uniqueVehicles.map(async (car) => {
-            await fetch(`/api/user/vehicles/${userId}`, {
+            await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ vehicle: car })
@@ -2207,16 +2242,16 @@ alter table public.comments enable row level security;
             </div>
 
             {/* Premium subscription active badge & scan counters */}
-            <div className="flex flex-col items-end gap-1 select-none">
+            <div className="flex flex-col items-end gap-1.5 select-none">
               {(() => {
                 if (selectedPlanTier === 'gasoline_gold') {
                   return (
                     <div 
                       onClick={() => handleOpenPlans('gasoline_gold')}
-                      className="cursor-pointer flex items-center gap-1 px-2.5 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 rounded-lg border border-amber-300 shadow-md shadow-amber-950/45 shrink-0"
+                      className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 rounded border border-amber-300 shadow-md shadow-amber-950/45 shrink-0"
                     >
                       <Sparkles className="h-2.5 w-2.5 text-slate-900" />
-                      <span className="text-[8px] font-mono font-black text-slate-900 tracking-wide">GOLD CO-PILOT</span>
+                      <span className="text-[7.5px] font-mono font-black text-slate-900 tracking-wide">GOLD CO-PILOT</span>
                     </div>
                   );
                 }
@@ -2224,34 +2259,43 @@ alter table public.comments enable row level security;
                   return (
                     <div 
                       onClick={() => handleOpenPlans('teen_passion')}
-                      className="cursor-pointer flex items-center gap-1.5 px-2.5 py-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-lg border border-indigo-400 shadow-md shadow-indigo-950/45 shrink-0"
+                      className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded border border-indigo-400 shadow-md shadow-indigo-950/45 shrink-0"
                     >
                       <Gauge className="h-2.5 w-2.5 text-white" />
-                      <span className="text-[8px] font-mono font-black text-white tracking-wide">TEEN PASSION</span>
+                      <span className="text-[7.5px] font-mono font-black text-white tracking-wide">TEEN PASSION</span>
                     </div>
                   );
                 }
                 return (
                   <div 
                     onClick={() => handleOpenPlans('chiptuning')}
-                    className="cursor-pointer flex items-center gap-1 px-2.5 py-0.5 bg-slate-800 hover:bg-slate-750 rounded-lg border border-slate-700 hover:border-indigo-505 transition-all text-slate-350 shrink-0"
+                    className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-slate-800 hover:bg-slate-750 rounded border border-slate-700 hover:border-indigo-500 transition-all text-slate-350 shrink-0"
                   >
-                    <span className="inline-block w-1 h-1 rounded-full bg-slate-500"></span>
-                    <span className="text-[8px] font-mono font-bold tracking-wide">FREE TIER 🔒</span>
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></span>
+                    <span className="text-[7.5px] font-mono font-bold tracking-wide">FREE TIER 🔒</span>
                   </div>
                 );
               })()}
               
-              <div className="text-[8px] font-mono text-zinc-500 font-semibold uppercase">
-                {selectedPlanTier === 'chiptuning' && (
-                  <span>Scans: {3 - scansCountUsed <= 0 ? 0 : 3 - scansCountUsed}/3 left</span>
-                )}
-                {selectedPlanTier === 'teen_passion' && (
-                  <span>Scans: {15 - scansCountUsed <= 0 ? 0 : 15 - scansCountUsed}/15 left</span>
-                )}
-                {selectedPlanTier === 'gasoline_gold' && (
-                  <span className="text-amber-400 font-bold flex items-center gap-0.5 font-mono">Scans: Unlim ♾️</span>
-                )}
+              <div className="text-[8px] font-mono space-y-0.5 tracking-tight text-right text-zinc-400">
+                <div>
+                  <span className="text-[7px] text-zinc-500 uppercase">Scans: </span>
+                  {selectedPlanTier === 'chiptuning' && <span className="font-bold text-emerald-400">{Math.max(0, 3 - scansCountUsed)}/3 rmn</span>}
+                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-indigo-400">{Math.max(0, 15 - scansCountUsed)}/15 rmn</span>}
+                  {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
+                </div>
+                <div>
+                  <span className="text-[7px] text-zinc-500 uppercase">Garage: </span>
+                  {selectedPlanTier === 'chiptuning' && <span className="font-bold text-slate-300">{garage.length}/3 slot</span>}
+                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-slate-300">{garage.length}/15 slot</span>}
+                  {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
+                </div>
+                <div>
+                  <span className="text-[7px] text-zinc-500 uppercase">Compare: </span>
+                  {selectedPlanTier === 'chiptuning' && <span className="font-semibold text-red-400">Locked 🔒</span>}
+                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-teal-400">{compareList.length}/2 max</span>}
+                  {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ {compareList.length}/3 max</span>}
+                </div>
               </div>
             </div>
           </div>
@@ -4865,18 +4909,48 @@ alter table public.comments enable row level security;`}
           </div>
 
           {/* Active plan highlighted name at footer bottom */}
-          <div className="mt-2 text-center text-[7.5px] font-mono tracking-widest uppercase border-t border-slate-900/60 pt-1.5 flex items-center justify-center gap-1 text-slate-500">
-            <span>Membership:</span>
-            {selectedPlanTier === 'chiptuning' && <span className="text-zinc-400 font-bold">Chiptuning Free</span>}
-            {selectedPlanTier === 'teen_passion' && <span className="text-indigo-400 font-extrabold font-mono">Teen Passion Active ⚡</span>}
-            {selectedPlanTier === 'gasoline_gold' && <span className="text-amber-400 font-extrabold font-mono">Gasoline Gold Active 🏆</span>}
-            <span className="text-slate-700">•</span>
-            <button 
-              onClick={() => handleOpenPlans(selectedPlanTier)} 
-              className="underline text-indigo-400 hover:text-indigo-300 transition cursor-pointer font-bold font-mono"
-            >
-              Manage
-            </button>
+          <div className="mt-2 text-center text-[7.5px] font-mono tracking-widest uppercase border-t border-slate-900/60 pt-1.5 flex flex-col gap-1.5 text-slate-500">
+            <div className="flex items-center justify-center gap-1">
+              <span>Membership:</span>
+              {selectedPlanTier === 'chiptuning' && <span className="text-zinc-400 font-bold">Chiptuning Free</span>}
+              {selectedPlanTier === 'teen_passion' && <span className="text-indigo-400 font-extrabold font-mono">Teen Passion Active ⚡</span>}
+              {selectedPlanTier === 'gasoline_gold' && <span className="text-amber-400 font-extrabold font-mono">Gasoline Gold Active 🏆</span>}
+              <span className="text-slate-700">•</span>
+              <button 
+                onClick={() => handleOpenPlans(selectedPlanTier)} 
+                className="underline text-indigo-400 hover:text-indigo-300 transition cursor-pointer font-bold font-mono"
+              >
+                Manage
+              </button>
+            </div>
+            
+            {/* Visual Scan Quota Capacity Bar */}
+            <div className="px-6 pb-1">
+              {selectedPlanTier !== 'gasoline_gold' ? (
+                <div className="space-y-0.5">
+                  <div className="flex justify-between items-center text-[7px] text-zinc-500 font-mono tracking-wide">
+                    <span>Scan usage limit</span>
+                    <span>{scansCountUsed} / {selectedPlanTier === 'chiptuning' ? 3 : 15} used</span>
+                  </div>
+                  <div className="w-full h-1 bg-slate-950/80 rounded-full border border-slate-900 overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-500 ${
+                        selectedPlanTier === 'chiptuning' ? 'bg-zinc-500' : 'bg-indigo-500'
+                      }`}
+                      style={{ width: `${Math.min(100, (scansCountUsed / (selectedPlanTier === 'chiptuning' ? 3 : 15)) * 100)}%` }}
+                    ></div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  <div className="flex justify-between items-center text-[7px] text-amber-500/80 font-mono tracking-wide">
+                    <span>Scan usage limit</span>
+                    <span className="font-bold">UNLIMITED CO-PILOT ACTIVE ♾️</span>
+                  </div>
+                  <div className="w-full h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-600 rounded-full"></div>
+                </div>
+              )}
+            </div>
           </div>
         </footer>
 

@@ -364,7 +364,8 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
   const getShareLink = () => {
     try {
       const payload = btoa(unescape(encodeURIComponent(JSON.stringify(cars))));
-      return `${window.location.origin}${window.location.pathname}?share_compare=${payload}`;
+      const safePayload = payload.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return `${window.location.origin}${window.location.pathname}?share_compare=${safePayload}`;
     } catch {
       return `${window.location.origin}${window.location.pathname}`;
     }
