@@ -13,6 +13,8 @@ interface CarDetailsReportProps {
   onDiscard: () => void;
   isSaved?: boolean;
   saveError?: string | null;
+  selectedPlanTier?: 'chiptuning' | 'teen_passion' | 'gasoline_gold';
+  onOpenPlans?: (tier?: 'chiptuning' | 'teen_passion' | 'gasoline_gold') => void;
 }
 
 function getVisualColorHex(colorName: string): string {
@@ -74,7 +76,15 @@ const StarRatingInput = ({
   );
 };
 
-export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = false, saveError = null }: CarDetailsReportProps) {
+export default function CarDetailsReport({ 
+  car, 
+  onSave, 
+  onDiscard, 
+  isSaved = false, 
+  saveError = null,
+  selectedPlanTier = 'chiptuning',
+  onOpenPlans
+}: CarDetailsReportProps) {
   // If the image is analyzed and determined not to be a car
   if (!car.isCar) {
     return (
@@ -124,6 +134,32 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
   const [ratingPerf, setRatingPerf] = useState<number>(0);
   const [ratingReliability, setRatingReliability] = useState<number>(0);
   const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [subscriptionWarning, setSubscriptionWarning] = useState<string | null>(null);
+  
+  const [broadcastCountUsed, setBroadcastCountUsed] = useState<number>(() => {
+    return parseInt(localStorage.getItem("whipcheck_broadcasts_use_count") || "0", 10);
+  });
+
+  const checkAndRegisterBroadcast = (): boolean => {
+    if (selectedPlanTier === 'chiptuning') {
+      setSubscriptionWarning("🔒 Spotter Card Broadcasting holds limited permissions. Upgrade to Teen Passion to activate custom share links!");
+      setTimeout(() => setSubscriptionWarning(null), 5000);
+      onOpenPlans?.('teen_passion');
+      return false;
+    }
+    if (selectedPlanTier === 'teen_passion') {
+      if (broadcastCountUsed >= 3) {
+        setSubscriptionWarning("🔒 You have used your 3 Teen Passion broadcasts limit. Upgrade to Gasoline Gold for unlimited broadcasts!");
+        setTimeout(() => setSubscriptionWarning(null), 5000);
+        onOpenPlans?.('gasoline_gold');
+        return false;
+      }
+      const nextCount = broadcastCountUsed + 1;
+      setBroadcastCountUsed(nextCount);
+      localStorage.setItem("whipcheck_broadcasts_use_count", nextCount.toString());
+    }
+    return true;
+  };
 
   const [newCommentText, setNewCommentText] = useState("");
   const [spotterUserName, setSpotterUserName] = useState(() => {
@@ -282,6 +318,22 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
     e.preventDefault();
     if (!newCommentText.trim()) return;
 
+    if (selectedPlanTier === 'chiptuning') {
+      if (comments.length >= 1) {
+        setSubscriptionWarning("🔒 Chiptuning Free is limited to 1 custom note/discuss entry. Upgrade to Teen Passion for up to 5 entries.");
+        setTimeout(() => setSubscriptionWarning(null), 5000);
+        onOpenPlans?.('teen_passion');
+        return;
+      }
+    } else if (selectedPlanTier === 'teen_passion') {
+      if (comments.length >= 5) {
+        setSubscriptionWarning("🔒 Teen Passion premium is limited to 5 custom note/discuss entries per car. Upgrade to Gasoline Gold for unlimited entries.");
+        setTimeout(() => setSubscriptionWarning(null), 5000);
+        onOpenPlans?.('gasoline_gold');
+        return;
+      }
+    }
+
     const authorName = spotterUserName.trim() || "Anonymous Petrolhead";
     const commentBody = newCommentText.trim();
 
@@ -307,10 +359,8 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
     setRatingPerf(0);
     setRatingReliability(0);
 
-    const isUserLoggedIn = !!localStorage.getItem("whipcheck_user_session");
-
     try {
-      if (isUserLoggedIn && isSupabaseConfigured() && supabase) {
+      if (isSupabaseConfigured() && supabase) {
         const { error } = await supabase.from("comments").insert({
           id: `cmt-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
           car_id: carCommentKey,
@@ -324,7 +374,7 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
         });
         if (error) throw error;
         await fetchComments();
-      } else if (isUserLoggedIn) {
+      } else {
         const response = await fetch(`/api/comments/${carCommentKey}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -349,11 +399,6 @@ export default function CarDetailsReport({ car, onSave, onDiscard, isSaved = fal
           setComments(updated);
           localStorage.setItem(`car_comments_${carCommentKey}`, JSON.stringify(updated));
         }
-      } else {
-        // Guest user - strictly offline / local browser storage only
-        const updated = [...comments.filter(c => c.id !== tempId && c.id !== "initial-1"), optimisticComment];
-        setComments(updated);
-        localStorage.setItem(`car_comments_${carCommentKey}`, JSON.stringify(updated));
       }
     } catch (err) {
       console.error("Failed to sync new comment to Supabase or backend pool", err);
@@ -427,12 +472,14 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
   };
 
   const handleCopyLink = () => {
+    if (!checkAndRegisterBroadcast()) return;
     navigator.clipboard.writeText(getShareLink());
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const handleCopyText = () => {
+    if (!checkAndRegisterBroadcast()) return;
     navigator.clipboard.writeText(getShareText());
     setCopiedText(true);
     setTimeout(() => setCopiedText(false), 2000);
@@ -662,7 +709,18 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
       </div>
 
       {/* Dynamic Share Module */}
-      <div className="bg-slate-900/40 p-4 rounded-xl border border-slate-850 space-y-3 shadow-md">
+      <div className="bg-slate-900/40 p-4 rounded-xl border border-slate-850 space-y-3 shadow-md relative overflow-hidden">
+        {selectedPlanTier === 'teen_passion' && (
+          <div className="absolute top-1 right-2 text-[8px] font-mono text-indigo-400 font-bold uppercase">
+            Broadcasts: {3 - broadcastCountUsed}/3 remaining
+          </div>
+        )}
+        {selectedPlanTier === 'chiptuning' && (
+          <div className="absolute top-1 right-2 text-[8px] font-mono text-zinc-500 font-bold uppercase">
+            Broadcasts: Locked 🔒
+          </div>
+        )}
+        
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 px-0.5">
             <Share2 className="h-3.5 w-3.5 text-teal-400" />
@@ -670,6 +728,12 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
           </div>
           <span className="text-[8px] font-mono text-emerald-400 uppercase tracking-widest bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/10">Active</span>
         </div>
+
+        {subscriptionWarning && (
+          <div className="p-2 bg-indigo-950/80 border border-indigo-500/30 text-indigo-300 rounded-lg text-[9.5px] font-mono leading-tight animate-pulse text-center">
+            {subscriptionWarning}
+          </div>
+        )}
 
         <div className="space-y-2.5">
           <p className="text-[10px] text-zinc-400 leading-relaxed">
@@ -718,6 +782,11 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
               href={`https://api.whatsapp.com/send?text=${encodeURIComponent(getShareText() + "\n\n🌐 View Live Spotter Pass: " + getShareLink())}`}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={(e) => {
+                if (!checkAndRegisterBroadcast()) {
+                  e.preventDefault();
+                }
+              }}
               className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400 text-[9px] font-mono border border-emerald-500/20 rounded-md transition font-semibold"
             >
               WhatsApp
@@ -726,6 +795,11 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
               href={`https://twitter.com/intent/tweet?text=${encodeURIComponent("Check out this " + car.make + " " + car.model + " I spotted and analyzed! Speed specs, resale estimated pricing, trivia & buyer advice on Whipcheck GT.")}&url=${encodeURIComponent(getShareLink())}`}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={(e) => {
+                if (!checkAndRegisterBroadcast()) {
+                  e.preventDefault();
+                }
+              }}
               className="px-3 py-1 bg-sky-500/10 hover:bg-sky-500/25 text-sky-400 text-[9px] font-mono border border-sky-500/20 rounded-md transition font-semibold"
             >
               Share on X
@@ -897,6 +971,18 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
                 <StarRatingInput label="Performance / Power" value={ratingPerf} onChange={setRatingPerf} />
                 <StarRatingInput label="Reliability / Build" value={ratingReliability} onChange={setRatingReliability} />
               </div>
+            </div>
+
+            {/* Plan Counter Status for Notes/Reviews */}
+            <div className="flex justify-between items-center text-[8px] font-mono uppercase tracking-wider px-1 text-slate-500">
+              <span>Discussion Board Notes</span>
+              {selectedPlanTier === 'chiptuning' ? (
+                <span className={comments.length >= 1 ? "text-amber-500 font-bold animate-pulse" : "text-emerald-400"}>Chiptuning Limit: {comments.length}/1 logged</span>
+              ) : selectedPlanTier === 'teen_passion' ? (
+                <span className={comments.length >= 5 ? "text-amber-500 font-bold animate-pulse" : "text-indigo-400"}>Teen Passion Limit: {comments.length}/5 logged</span>
+              ) : (
+                <span className="text-amber-400 font-black">Gasoline Gold: Unlimited ♾️</span>
+              )}
             </div>
 
             <div className="relative flex items-center">

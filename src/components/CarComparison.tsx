@@ -297,35 +297,26 @@ export default function CarComparison({ cars, onClose, onRemoveFromCompare, acti
     setComments(prev => [...prev.filter(c => c.id !== "comp-init"), optimisticComment]);
     setNewCommentText("");
 
-    const isUserLoggedIn = !!localStorage.getItem("whipcheck_user_session");
+    try {
+      const response = await fetch(`/api/comments/${compKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ author: authorName, text: commentBody })
+      });
 
-    if (isUserLoggedIn) {
-      try {
-        const response = await fetch(`/api/comments/${compKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ author: authorName, text: commentBody })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          if (data.comments) {
-            setComments(data.comments);
-            localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
-          }
-        } else {
-          const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
-          setComments(updated);
-          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
+      if (response.ok) {
+        const data = await response.json();
+        if (data.comments) {
+          setComments(data.comments);
+          localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(data.comments));
         }
-      } catch (err) {
-        console.error("Failed to sync compare comment to backend database", err);
+      } else {
         const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
         setComments(updated);
         localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));
       }
-    } else {
-      // Guest local-only save
+    } catch (err) {
+      console.error("Failed to sync compare comment to backend database", err);
       const updated = [...comments.filter(c => c.id !== tempId && c.id !== "comp-init"), optimisticComment];
       setComments(updated);
       localStorage.setItem(`compare_comments_${compKey}`, JSON.stringify(updated));

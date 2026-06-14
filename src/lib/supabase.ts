@@ -6,7 +6,28 @@ let activeSupabaseUrl = localStorage.getItem("whipcheck_supabase_url") || import
 let activeSupabaseAnonKey = localStorage.getItem("whipcheck_supabase_anon_key") || import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 
 export const isSupabaseConfigured = (): boolean => {
-  return activeSupabaseUrl.trim() !== "" && activeSupabaseAnonKey.trim() !== "";
+  const url = (activeSupabaseUrl || "").trim().toLowerCase();
+  const anonKey = (activeSupabaseAnonKey || "").trim();
+  
+  if (!url || !anonKey) return false;
+  if (url === "undefined" || anonKey === "undefined") return false;
+  
+  // URL must start with https://
+  if (!url.startsWith("https://")) return false;
+  
+  // It cannot be a placeholder
+  if (
+    url.includes("your-project") || 
+    url.includes("placeholder") || 
+    url.includes("your_") || 
+    url.includes("my_") || 
+    url.includes("dummy.com") ||
+    url.includes("your-supabase-url")
+  ) {
+    return false;
+  }
+  
+  return true;
 };
 
 // Lazy initialization of the Supabase client

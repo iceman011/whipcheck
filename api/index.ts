@@ -731,11 +731,48 @@ app.get("/api/dashboard-stats", (req, res) => {
     });
 
     let topRatedCarDetails = null;
+    let comfortAvg: number | null = null;
+    let gasAvg: number | null = null;
+    let performanceAvg: number | null = null;
+    let reliabilityAvg: number | null = null;
+
     if (topVehicleId) {
       topRatedCarDetails = Array.from(uniqueVehiclesMap.values()).find(v => {
         const normalized = `${v.make}-${v.model}`.toLowerCase().replace(/[^a-z0-9]/g, "");
         return v.id === topVehicleId || normalized === topVehicleId;
       });
+
+      const topComments = comments[topVehicleId];
+      if (Array.isArray(topComments) && topComments.length > 0) {
+        let comfortSum = 0, comfortCount = 0;
+        let gasSum = 0, gasCount = 0;
+        let perfSum = 0, perfCount = 0;
+        let relSum = 0, relCount = 0;
+
+        topComments.forEach((cmt: any) => {
+          if (typeof cmt.comfort === 'number' && cmt.comfort > 0) {
+            comfortSum += cmt.comfort;
+            comfortCount++;
+          }
+          if (typeof cmt.gasConsumption === 'number' && cmt.gasConsumption > 0) {
+            gasSum += cmt.gasConsumption;
+            gasCount++;
+          }
+          if (typeof cmt.performance === 'number' && cmt.performance > 0) {
+            perfSum += cmt.performance;
+            perfCount++;
+          }
+          if (typeof cmt.reliability === 'number' && cmt.reliability > 0) {
+            relSum += cmt.reliability;
+            relCount++;
+          }
+        });
+
+        if (comfortCount > 0) comfortAvg = Number((comfortSum / comfortCount).toFixed(1));
+        if (gasCount > 0) gasAvg = Number((gasSum / gasCount).toFixed(1));
+        if (perfCount > 0) performanceAvg = Number((perfSum / perfCount).toFixed(1));
+        if (relCount > 0) reliabilityAvg = Number((relSum / relCount).toFixed(1));
+      }
     }
 
     // Robust high-octane default fallbacks if no ratings yet
@@ -782,7 +819,7 @@ app.get("/api/dashboard-stats", (req, res) => {
       Object.values(comments).forEach(cList => {
         if (Array.isArray(cList)) {
           cList.forEach(c => {
-            if (c && c.author && c.author.trim().toLowerCase() === queryUsername) {
+            if (c && typeof c.author === "string" && c.author.trim().toLowerCase() === queryUsername) {
               userCommentsCount++;
             }
           });
@@ -798,7 +835,11 @@ app.get("/api/dashboard-stats", (req, res) => {
       topRatedCar: topRatedCarDetails ? {
         ...topRatedCarDetails,
         averageRating: maxAvgRating || 4.8,
-        ratingCount: topVehicleId ? (vehicleRatings[topVehicleId]?.count || 1) : 12
+        ratingCount: topVehicleId ? (vehicleRatings[topVehicleId]?.count || 1) : 12,
+        comfortAvg: comfortAvg || 4.7,
+        gasAvg: gasAvg || 4.2,
+        performanceAvg: performanceAvg || 4.9,
+        reliabilityAvg: reliabilityAvg || 4.8
       } : null,
       vehicleRatings
     });
