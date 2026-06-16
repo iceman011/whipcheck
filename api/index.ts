@@ -861,6 +861,16 @@ app.post("/api/admin/reset-database", (req, res) => {
   }
 });
 
+// Clear/Reset ONLY registered users in local app database
+app.post("/api/admin/wipe-users", (req, res) => {
+  try {
+    writeUsersDb({});
+    res.json({ success: true, message: "All users registered in the app have been successfully cleared!" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to clear registered users." });
+  }
+});
+
 // Fetch detailed database stats and raw values for server-side persistence sandbox
 app.get("/api/admin/database-stats", (req, res) => {
   try {

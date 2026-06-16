@@ -328,6 +328,7 @@ export default function App() {
     return saved || null;
   });
   const [showWipeConfirm, setShowWipeConfirm] = useState<boolean>(false);
+  const [showWipeUsersConfirm, setShowWipeUsersConfirm] = useState<boolean>(false);
   const [accountSyncProgress, setAccountSyncProgress] = useState<string | null>(null);
   const [accountSyncError, setAccountSyncError] = useState<string | null>(null);
 
@@ -393,7 +394,17 @@ export default function App() {
   });
   const [adminUsernameInput, setAdminUsernameInput] = useState<string>("");
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>("");
-  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data' | 'localstorage'>('db');
+  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data' | 'localstorage' | 'supabase_wipe'>('db');
+
+  // Supabase Table Rows Count and Full Cloud Wipe state
+  const [supabaseTotalCarCount, setSupabaseTotalCarCount] = useState<number | null>(null);
+  const [supabaseTotalCommentCount, setSupabaseTotalCommentCount] = useState<number | null>(null);
+  const [isFetchingSupabaseCounts, setIsFetchingSupabaseCounts] = useState<boolean>(false);
+  const [supabaseCountsError, setSupabaseCountsError] = useState<string | null>(null);
+  const [supabaseWipeProgress, setSupabaseWipeProgress] = useState<string | null>(null);
+  const [supabaseWipeError, setSupabaseWipeError] = useState<string | null>(null);
+  const [supabaseWipeSuccess, setSupabaseWipeSuccess] = useState<boolean>(false);
+  const [showSupabaseWipeConfirm, setShowSupabaseWipeConfirm] = useState<boolean>(false);
   const [adminDbStats, setAdminDbStats] = useState<any>(null);
   const [adminDbStatsLoading, setAdminDbStatsLoading] = useState<boolean>(false);
   const [adminError, setAdminError] = useState<string | null>(null);
@@ -441,9 +452,99 @@ export default function App() {
     }
   };
 
+  const fetchSupabaseTotalCounts = async () => {
+    if (!isSupabaseConfigured() || !supabase) {
+      setSupabaseCountsError("Supabase is not configured yet. Configure connection settings in the DB SETUP tab first.");
+      setSupabaseTotalCarCount(null);
+      setSupabaseTotalCommentCount(null);
+      return;
+    }
+    
+    setIsFetchingSupabaseCounts(true);
+    setSupabaseCountsError(null);
+    try {
+      // 1. Fetch exact count of vehicles
+      const { count: carCount, error: carError } = await supabase
+        .from("vehicles")
+        .select("*", { count: "exact", head: true });
+        
+      if (carError) throw carError;
+      
+      // 2. Fetch exact count of comments
+      const { count: commentCount, error: commentError } = await supabase
+        .from("comments")
+        .select("*", { count: "exact", head: true });
+        
+      if (commentError) throw commentError;
+      
+      setSupabaseTotalCarCount(carCount || 0);
+      setSupabaseTotalCommentCount(commentCount || 0);
+    } catch (err: any) {
+      console.error("Failed to query Supabase counts:", err);
+      setSupabaseCountsError(err.message || String(err));
+    } finally {
+      setIsFetchingSupabaseCounts(false);
+    }
+  };
+
+  const handleWipeSupabaseData = async () => {
+    if (!isSupabaseConfigured() || !supabase) {
+      setSupabaseWipeError("Supabase is not configured.");
+      return;
+    }
+    
+    setSupabaseWipeProgress("Initiating complete Supabase cloud database wipe...");
+    setSupabaseWipeError(null);
+    setSupabaseWipeSuccess(false);
+    
+    try {
+      // Step 1: Wipe all records from comments table
+      setSupabaseWipeProgress("Step 1/2: Wiping 'comments' table by bypassing standard filters...");
+      const { error: commentsWipeError } = await supabase
+        .from("comments")
+        .delete()
+        .neq("id", "0"); // Standard way to delete columns under basic RLS or broad permissions
+        
+      if (commentsWipeError) {
+        console.warn("Wiping comments encountered error (could be RLS restriction):", commentsWipeError);
+        // Continue but log
+        setSupabaseWipeProgress(prev => prev + `\n⚠️ Comments Wipe Warning: ${commentsWipeError.message}. Proceeding to vehicles...`);
+      } else {
+        setSupabaseWipeProgress(prev => prev + "\n- Comments table wipe complete!");
+      }
+      
+      // Step 2: Wipe all records from vehicles table
+      setSupabaseWipeProgress(prev => prev + "\nStep 2/2: Wiping 'vehicles' table...");
+      const { error: vehiclesWipeError } = await supabase
+        .from("vehicles")
+        .delete()
+        .neq("id", "0");
+        
+      if (vehiclesWipeError) {
+        console.warn("Wiping vehicles encountered error:", vehiclesWipeError);
+        throw vehiclesWipeError;
+      } else {
+        setSupabaseWipeProgress(prev => prev + "\n- Vehicles table wipe complete!");
+      }
+      
+      setSupabaseWipeProgress(prev => prev + "\n🎉 Full cloud wipe executed successfully!");
+      setSupabaseWipeSuccess(true);
+      setShowSupabaseWipeConfirm(false);
+      
+      // Refresh counts
+      await fetchSupabaseTotalCounts();
+    } catch (err: any) {
+      console.error("Wipe failed:", err);
+      setSupabaseWipeError(err.message || String(err));
+      setSupabaseWipeProgress(null);
+    }
+  };
+
   useEffect(() => {
     if (adminSubTab === 'localstorage') {
       refreshLocalStorage();
+    } else if (adminSubTab === 'supabase_wipe') {
+      fetchSupabaseTotalCounts();
     }
   }, [adminSubTab]);
 
@@ -870,6 +971,13 @@ export default function App() {
     if (!car) return;
     setSaveError(null);
 
+    if (!currentUser) {
+      setSaveError("🔒 Guests cannot add vehicles to the garage. Please register or log in first!");
+      setActiveTab('account');
+      setAuthMessage("✨ To add scans to your personal garage, please register an account or log in first!");
+      return;
+    }
+
     const limit = selectedPlanTier === 'chiptuning' ? 3 : selectedPlanTier === 'teen_passion' ? 15 : Infinity;
     if (garage.length >= limit) {
       const planNameCurrent = selectedPlanTier === 'chiptuning' ? 'Chiptuning Free' : 'Teen Passion';
@@ -1044,6 +1152,16 @@ export default function App() {
 
   // Turn camera on/off
   const startCamera = async () => {
+    if (checkScanLimitReached()) {
+      if (!currentUser) {
+        setActiveTab('account');
+        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        return;
+      }
+      handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
+      setAuthMessage(`🚫 Scan limit of ${selectedPlanTier === 'chiptuning' ? '3' : '15'} scans reached for your current plan! Upgrade to unlock unlimited scans.`);
+      return;
+    }
     stopCamera();
     setScanStep('capture');
     setErrorMsg(null);
@@ -1087,6 +1205,16 @@ export default function App() {
   };
 
   const processSelectedImageFile = (file: File) => {
+    if (checkScanLimitReached()) {
+      if (!currentUser) {
+        setActiveTab('account');
+        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        return;
+      }
+      handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
+      setAuthMessage(`🚫 Scan limit of ${selectedPlanTier === 'chiptuning' ? '3' : '15'} scans reached for your current plan! Upgrade to unlock unlimited scans.`);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
@@ -1122,6 +1250,10 @@ export default function App() {
   };
 
   const checkScanLimitReached = () => {
+    // Guest user constraints: allow guest user to scan only once
+    if (!currentUser && scansCountUsed >= 1) {
+      return true;
+    }
     if (selectedPlanTier === 'chiptuning' && (scansCountUsed >= 3 || garage.length >= 3)) {
       return true;
     }
@@ -1134,6 +1266,11 @@ export default function App() {
   // Handle sample click
   const handleSelectSample = (sampleUrl: string) => {
     if (checkScanLimitReached()) {
+      if (!currentUser) {
+        setActiveTab('account');
+        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        return;
+      }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
       setAuthMessage(`🚫 Scan limit of ${selectedPlanTier === 'chiptuning' ? '3' : '15'} scans reached for your current plan! Upgrade to unlock unlimited scans.`);
       return;
@@ -1145,6 +1282,12 @@ export default function App() {
   // Trigger Gemini API Request
   const analyzeCarImage = async (base64Data: string | null, urlData: string | null) => {
     if (checkScanLimitReached()) {
+      if (!currentUser) {
+        setActiveTab('account');
+        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        setScanStep('idle');
+        return;
+      }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
       setAuthMessage(`🚫 Scan limit of ${selectedPlanTier === 'chiptuning' ? '3' : '15'} scans reached for your current plan! Upgrade to unlock unlimited scans.`);
       setScanStep('idle');
@@ -1607,6 +1750,33 @@ alter table public.comments enable row level security;
         );
 
         // 5. Hard reload to root to completely purge deep-context React states and cache buffers
+        window.location.href = "/";
+      } else {
+        const errData = await res.json().catch(() => ({ error: "Reset failed" }));
+        setResetFeedback(`Error: ${errData.error || "Reset failed"}`);
+      }
+    } catch (err: any) {
+      setResetFeedback(`Request failed: ${err.message || err}`);
+    }
+  };
+
+  const handleWipeRegisteredUsers = async () => {
+    try {
+      setResetFeedback("Wiping registered user database on server...");
+      const res = await fetch("/api/admin/wipe-users", { method: "POST" });
+      if (res.ok) {
+        setResetFeedback("Registered user accounts database wiped successfully.");
+        
+        // Clear all active user sessions
+        localStorage.removeItem("whipcheck_user_session");
+        localStorage.removeItem("whipcheck_auth_email");
+        localStorage.removeItem("whipcheck_spotter_name");
+        sessionStorage.clear();
+        
+        sessionStorage.setItem(
+          "whipcheck_wiped_success_msg",
+          "✅ SUCCESS: All users registered in the app have been successfully wiped from the database!"
+        );
         window.location.href = "/";
       } else {
         const errData = await res.json().catch(() => ({ error: "Reset failed" }));
@@ -2519,76 +2689,6 @@ alter table public.comments enable row level security;
                       )}
                     </div>
                   </div>
-                </div>
-              </div>
-
-              {/* INTERACTIVE SUBSCRIPTION ADVISORY CARD */}
-              <div className="p-4 rounded-2xl border border-indigo-900/40 bg-indigo-950/25 space-y-3 relative overflow-hidden backdrop-blur-sm">
-                <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-indigo-500/10 rounded-full blur-xl pointer-events-none"></div>
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="p-1.5 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-400">
-                      <Sparkles className="h-4 w-4 animate-pulse text-indigo-455" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">
-                        Membership: {selectedPlanTier === 'chiptuning' ? "Chiptuning Free" : selectedPlanTier === 'teen_passion' ? "Teen Passion Premium" : "Gasoline Gold Co-Pilot"}
-                      </h4>
-                      <p className="text-[9.5px] text-indigo-300 font-semibold font-mono uppercase mt-0.5">
-                        {selectedPlanTier === 'chiptuning' ? "Basic stats • Ad-supported" : "Parent co-pilot verified • Premium active"}
-                      </p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => handleOpenPlans()}
-                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold font-mono text-[9px] uppercase tracking-wider transition cursor-pointer select-none"
-                  >
-                    Manage Plans
-                  </button>
-                </div>
-                
-                {selectedPlanTier === 'chiptuning' ? (
-                  <p className="text-[10px] text-zinc-400 leading-relaxed font-sans">
-                    Unlock exclusive luxury sport-liveries (<em>Bugatti Monaco</em> & <em>Lamborghini Amethyst</em>) and sponsor parent co-pilot STEM tools designed for young car spotters with verified safety limits.
-                  </p>
-                ) : (
-                  <div className="text-[10px] text-zinc-300 leading-relaxed font-sans bg-black/30 p-2.5 rounded-lg border border-indigo-950 flex flex-col gap-1">
-                    <div className="flex items-center gap-1.5 text-emerald-400 font-bold uppercase text-[9px] font-mono">
-                      <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-                      CO-PILOT COMPLIANCE ACTIVATED
-                    </div>
-                    <p className="text-[9.5px]">
-                      Sponsor and co-pilot: <strong className="text-slate-100">{parentName || "Anonymous Parent"}</strong> (<span className="text-slate-400">{parentEmail || "not set"}</span>). Features verified as child-safe and compliant with zero hidden fees.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Unique scanned image dashboard statistics */}
-              <div className="grid grid-cols-2 gap-3 font-mono">
-                {/* Total Unique Scanned Images regardless of owner user */}
-                <div className="bg-slate-900/30 p-3 rounded-xl border border-slate-850 flex flex-col justify-between">
-                  <div>
-                    <span className="text-[8px] text-zinc-500 uppercase tracking-wider block font-bold leading-none mb-1">Unique Scanned Images</span>
-                    <h3 className="text-lg font-black text-slate-100 tracking-tight">
-                      {dashboardStats ? dashboardStats.totalUniqueScannedImages : 0}
-                    </h3>
-                  </div>
-                  <p className="text-[9.5px] text-slate-450 leading-tight mt-1.5">
-                    Total count of unique physical files/images spotted across all users.
-                  </p>
-                </div>
-
-                <div className="bg-slate-900/30 p-3 rounded-xl border border-slate-850 flex flex-col justify-between">
-                  <div>
-                    <span className="text-[8px] text-zinc-500 uppercase tracking-wider block font-bold leading-none mb-1">Community Database Spots</span>
-                    <h3 className="text-lg font-black text-slate-100 tracking-tight">
-                      {dashboardStats ? dashboardStats.totalScansCount : 0}
-                    </h3>
-                  </div>
-                  <p className="text-[9.5px] text-slate-450 leading-tight mt-1.5">
-                    Sum total of all spots logged across the collective database.
-                  </p>
                 </div>
               </div>
 
@@ -3880,7 +3980,7 @@ alter table public.comments enable row level security;
                   </div>
 
                   {/* Elegant Horizontal Tab Bar */}
-                  <div className="grid grid-cols-4 gap-1 bg-slate-950 border border-slate-900 rounded-xl p-1 font-mono text-[9px] leading-tight shadow-inner select-none">
+                  <div className="grid grid-cols-5 gap-1 bg-slate-950 border border-slate-900 rounded-xl p-1 font-mono text-[9px] leading-tight shadow-inner select-none">
                     <button
                       type="button"
                       onClick={() => setAdminSubTab('db')}
@@ -3936,6 +4036,22 @@ alter table public.comments enable row level security;
                     >
                       <HardDrive className="h-3 w-3 shrink-0" />
                       <span>LOCAL STORAGE</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminSubTab('supabase_wipe');
+                        fetchSupabaseTotalCounts();
+                      }}
+                      className={`py-2 px-1 rounded-lg font-bold transition flex items-center justify-center gap-1 cursor-pointer truncate ${
+                        adminSubTab === 'supabase_wipe'
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/25 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Trash2 className="h-3 w-3 shrink-0 text-red-400" />
+                      <span>CLOUD WIPE</span>
                     </button>
                   </div>
 
@@ -4187,6 +4303,20 @@ alter table public.comments enable row level security;`}
                         </div>
                       </div>
 
+                      {/* Community Scans & Spots Statistics */}
+                      <div className="grid grid-cols-2 gap-2 font-mono text-[10px] pt-1">
+                        <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl">
+                          <span className="text-[8px] text-zinc-500 block uppercase mb-1">Unique Scanned Images</span>
+                          <strong className="text-indigo-400 text-xs font-black">{dashboardStats ? dashboardStats.totalUniqueScannedImages : 0}</strong>
+                          <p className="text-[9px] text-zinc-550 mt-0.5 leading-normal">Total count of unique physical files spotted across all users.</p>
+                        </div>
+                        <div className="p-2.5 bg-slate-950 border border-slate-900 rounded-xl">
+                          <span className="text-[8px] text-zinc-500 block uppercase mb-1">Community Database Spots</span>
+                          <strong className="text-yellow-400 text-xs font-black">{dashboardStats ? dashboardStats.totalScansCount : 0}</strong>
+                          <p className="text-[9px] text-zinc-550 mt-0.5 leading-normal">Sum total of all vehicle scans/spots logged in collective database.</p>
+                        </div>
+                      </div>
+
                       {/* Interactive Datasets list display */}
                       <div className="space-y-3.5 pt-1">
                         {/* Users browser */}
@@ -4309,6 +4439,47 @@ alter table public.comments enable row level security;`}
                             </div>
                           </div>
                         )}
+
+                        {/* WIPE USERS IN APP BUTTON */}
+                        <div className="pt-2 border-t border-slate-900/60 space-y-2 text-left">
+                          <p className="text-[9px] text-zinc-500 font-sans leading-normal">Wipe registered users in the app without resetting the vehicle scan database archives.</p>
+                          
+                          {!showWipeUsersConfirm ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowWipeUsersConfirm(true)}
+                              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-orange-950/20 hover:bg-orange-950/40 border border-orange-900/45 hover:border-orange-850 font-mono text-[10px] font-bold text-orange-200 hover:text-white transition cursor-pointer"
+                            >
+                              <User className="h-3.5 w-3.5 text-orange-400" />
+                              <span>WIPE ALL REGISTERED USERS</span>
+                            </button>
+                          ) : (
+                            <div className="p-3 bg-orange-950/20 border border-orange-550/30 rounded-xl space-y-2 text-center">
+                              <p className="text-[9.5px] text-orange-200 font-bold uppercase font-mono tracking-wider">
+                                ⚠️ WIPE ALL REGISTERED USERS?
+                              </p>
+                              <p className="text-[9px] text-zinc-400 font-sans leading-normal">
+                                This will instantly clear all users registered in the app. Users will be logged out and forced to sign up/verify again.
+                              </p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowWipeUsersConfirm(false)}
+                                  className="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-zinc-400 font-mono font-bold text-[9px] uppercase cursor-pointer transition text-center"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleWipeRegisteredUsers}
+                                  className="py-1 px-2.5 rounded-lg bg-orange-655 hover:bg-orange-600 text-white font-mono font-bold text-[9px] uppercase cursor-pointer transition text-center shadow-md shadow-orange-950/50"
+                                >
+                                  YES, WIPE USERS
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
 
                         {/* Purge status logging monitor */}
                         {resetFeedback && (
@@ -4806,6 +4977,175 @@ alter table public.comments enable row level security;`}
                       </div>
                     </div>
                   )}
+
+                  {adminSubTab === 'supabase_wipe' && (
+                    <div className="space-y-4 animate-fade-in text-left">
+                      <div className="flex items-center justify-between border-b border-slate-900 pb-2">
+                        <div className="space-y-0.5">
+                          <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono tracking-wide">☁️ Supabase Cloud Database Purge</h4>
+                          <p className="text-[9.5px] text-zinc-500 leading-normal">
+                            Direct administrative control to perform a high-level table format across Supabase cloud collections.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={fetchSupabaseTotalCounts}
+                          disabled={isFetchingSupabaseCounts || !isSupabaseConfigured()}
+                          className="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 hover:text-slate-200 font-mono text-[9px] uppercase flex items-center gap-1.5 cursor-pointer disabled:opacity-40 transition"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${isFetchingSupabaseCounts ? "animate-spin" : ""}`} />
+                          <span>Refresh Statistics</span>
+                        </button>
+                      </div>
+
+                      {/* Connection Parameters Display banner */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pb-1">
+                        <div className="p-3 bg-slate-950/70 border border-slate-900 rounded-xl space-y-1.5 font-mono text-[9.5px]">
+                          <span className="text-[8px] text-zinc-500 uppercase tracking-widest font-black block">Active Connection Metadata</span>
+                          <div className="space-y-1 text-zinc-400 leading-tight">
+                            <div className="flex justify-between">
+                              <span className="text-zinc-650">Host URL:</span>
+                              <span className="text-slate-300 truncate max-w-[200px] select-all" title={getActiveSupabaseConfig().url}>
+                                {getActiveSupabaseConfig().url || "Unconfigured"}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-zinc-650">Anon Key:</span>
+                              <span className="text-slate-300 select-none">
+                                {getActiveSupabaseConfig().anonKey ? "•••••••••••• (Active)" : "None"}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center pt-0.5">
+                              <span className="text-zinc-650">Connection Status:</span>
+                              {isSupabaseConfigured() ? (
+                                <span className="px-1.5 py-0.25 text-[8px] uppercase font-bold text-emerald-400 bg-emerald-950/50 border border-emerald-500/20 rounded">
+                                  Configured
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.25 text-[8px] uppercase font-bold text-red-400 bg-red-950/50 border border-red-500/20 rounded">
+                                  Unconfigured
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Real-time Row metrics panel */}
+                        <div className="p-3 bg-slate-950/70 border border-slate-900 rounded-xl space-y-2 font-mono text-[9.5px]">
+                          <span className="text-[8px] text-zinc-500 uppercase tracking-widest font-black block">Target Rows Sourced</span>
+                          
+                          {supabaseCountsError && (
+                            <div className="text-red-400 text-[8.5px] leading-relaxed italic bg-red-950/10 p-1.5 rounded border border-red-900/10">
+                              Error Sourcing counts: {supabaseCountsError}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-2 gap-2 text-center">
+                            <div className="p-2 bg-slate-950 border border-slate-900 rounded-lg">
+                              <span className="text-[8px] text-zinc-600 block uppercase font-black tracking-wide mb-0.5">Vehicles (Catalog)</span>
+                              {isFetchingSupabaseCounts ? (
+                                <span className="text-zinc-500 text-xs font-bold leading-none animate-pulse">Querying...</span>
+                              ) : (
+                                <strong className="text-slate-200 text-base font-black">
+                                  {supabaseTotalCarCount !== null ? supabaseTotalCarCount : "—"}
+                                </strong>
+                              )}
+                            </div>
+                            <div className="p-2 bg-slate-950 border border-slate-900 rounded-lg">
+                              <span className="text-[8px] text-zinc-600 block uppercase font-black tracking-wide mb-0.5">Comments & Reviews</span>
+                              {isFetchingSupabaseCounts ? (
+                                <span className="text-zinc-500 text-xs font-bold leading-none animate-pulse">Querying...</span>
+                              ) : (
+                                <strong className="text-amber-400 text-base font-black">
+                                  {supabaseTotalCommentCount !== null ? supabaseTotalCommentCount : "—"}
+                                </strong>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Danger Banner Warning */}
+                      <div className="p-3 bg-red-950/20 border border-red-500/15 rounded-xl text-left flex gap-3 text-[10px] leading-normal font-sans text-red-200">
+                        <ShieldAlert className="h-6 w-6 text-red-450 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <strong className="text-red-400 uppercase tracking-wide font-mono text-[10px] block">⚠️ CRITICAL DANGER: Destructive Wipe</strong>
+                          <p className="text-zinc-400">
+                            Executing a purge initiates a sweeping delete query against the <code className="text-[10px] bg-red-950/40 text-red-400 px-1 rounded font-mono">vehicles</code> and <code className="text-[10px] bg-red-950/40 text-red-400 px-1 rounded font-mono">comments</code> rows. Sourced items belonging to registered users will be permanently scrubbed.
+                          </p>
+                          <p className="text-zinc-500 text-[9px] pt-1">
+                            *Note on Row Level Security (RLS): To purge rows across all registers, the configured Anon Key should have complete delete credentials or standard Row Level Security should be bypassed on the target schema.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Interactive Triggers */}
+                      <div className="pt-2">
+                        {!showSupabaseWipeConfirm ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowSupabaseWipeConfirm(true);
+                              setSupabaseWipeError(null);
+                              setSupabaseWipeSuccess(false);
+                            }}
+                            disabled={!isSupabaseConfigured() || isFetchingSupabaseCounts}
+                            className="w-full py-3 px-4 rounded-xl bg-red-650 hover:bg-red-600 border border-red-500/10 text-white font-mono text-[10.5px] font-black uppercase tracking-wider transition cursor-pointer select-none active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed text-center flex items-center justify-center gap-1.5"
+                          >
+                            <Trash2 className="h-4 w-4 shrink-0" />
+                            <span>Wipe All Supabase Cloud Data</span>
+                          </button>
+                        ) : (
+                          <div className="p-4 bg-red-950/30 border border-red-500/20 rounded-xl space-y-3 animate-fade-in text-center font-mono">
+                            <span className="text-[11px] font-black text-red-400 uppercase block tracking-wider">⚠️ Confirm Cloud Destruction? ⚠️</span>
+                            <p className="text-[9.5px] text-zinc-400 max-w-md mx-auto leading-normal">
+                              This will irreversibly delete all comments of all testers and all user vehicles in the active database. Current statistics: {supabaseTotalCarCount !== null ? supabaseTotalCarCount : "Unknown"} cars, {supabaseTotalCommentCount !== null ? supabaseTotalCommentCount : "Unknown"} comment references.
+                            </p>
+                            
+                            <div className="flex gap-2 justify-center pt-1.5 max-w-sm mx-auto">
+                              <button
+                                type="button"
+                                onClick={handleWipeSupabaseData}
+                                className="flex-1 py-2 px-3 rounded-lg bg-red-650 hover:bg-red-600 text-white text-[10px] font-black uppercase transition cursor-pointer"
+                              >
+                                Yes, WIPE DATA!
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowSupabaseWipeConfirm(false)}
+                                className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-350 text-[10px] uppercase transition cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Log or Results Banner */}
+                      {supabaseWipeProgress && (
+                        <div className="bg-slate-950 border border-slate-900 rounded-xl p-3 overflow-hidden text-left relative font-mono text-[9px] text-zinc-300 leading-normal whitespace-pre-wrap select-all">
+                          <span className="text-[8px] text-amber-500 font-bold uppercase block tracking-wider mb-1.5 select-none">⚡ WIPE SEQUENCE STATUS LOG</span>
+                          {supabaseWipeProgress}
+                        </div>
+                      )}
+
+                      {supabaseWipeSuccess && (
+                        <div className="p-3 bg-emerald-950/40 border border-emerald-500/20 rounded-xl text-emerald-400 text-[10px] leading-relaxed font-mono flex items-center gap-2 animate-fade-in">
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-450" />
+                          <span>Supabase Cloud Wipe operation successfully finished! All matching database rows wiped.</span>
+                        </div>
+                      )}
+
+                      {supabaseWipeError && (
+                        <div className="p-3 bg-red-950/40 border border-red-500/20 rounded-xl text-red-400 text-[10px] leading-relaxed font-mono flex items-center gap-2 animate-fade-in">
+                          <ShieldAlert className="h-4 w-4 shrink-0 text-red-450" />
+                          <span>Wipe execution error: {supabaseWipeError}</span>
+                        </div>
+                      )}
+
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -4999,15 +5339,24 @@ alter table public.comments enable row level security;`}
                 )}
 
                 {/* Sub Plan 1: Chiptuning */}
-                <div className={`p-3.5 rounded-xl border transition-all ${activePlanSelection === 'chiptuning' ? 'border-zinc-500 bg-zinc-950/20' : 'border-slate-900 bg-slate-900/10 hover:bg-slate-900/20'}`}>
+                <div className={`p-4 rounded-xl border-2 transition-all duration-300 ${
+                  activePlanSelection === 'chiptuning' 
+                    ? 'border-slate-400 bg-slate-900/60 shadow-[0_0_15px_rgba(200,200,200,0.1)]' 
+                    : 'border-slate-900 bg-slate-950/40 hover:bg-slate-900/20'
+                }`}>
                   <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-[8px] font-mono tracking-widest text-zinc-500 font-extrabold uppercase">Slightly Boosted</span>
-                      <h4 className="text-xs font-bold text-slate-200">CHIPTUNING FREE</h4>
+                    <div className="flex gap-2 items-center">
+                      <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-400">
+                        <Cpu className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <span className="text-[8px] font-mono tracking-widest text-zinc-550 font-extrabold uppercase">Slightly Boosted</span>
+                        <h4 className="text-xs font-bold text-slate-200">CHIPTUNING FREE</h4>
+                      </div>
                     </div>
                     <span className="text-xs font-black font-mono text-zinc-400">$0 <span className="text-[8px] font-normal text-zinc-500">/mo</span></span>
                   </div>
-                  <div className="text-[9.5px] text-zinc-400 leading-relaxed mt-2 space-y-1">
+                  <div className="text-[9.5px] text-zinc-400 leading-relaxed mt-3 space-y-1 pl-1">
                     <p>Standard car identifying specs with COPPA safety:</p>
                     <ul className="list-disc list-inside text-[8.5px] text-zinc-500 space-y-0.5 font-mono">
                       <li>• Maximum 3 Car Scans</li>
@@ -5018,7 +5367,7 @@ alter table public.comments enable row level security;`}
                   </div>
                   <button 
                     onClick={() => handleSelectPlan('chiptuning')}
-                    className={`w-full mt-3 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase transition ${
+                    className={`w-full mt-3.5 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase transition cursor-pointer ${
                       selectedPlanTier === 'chiptuning' 
                         ? 'bg-zinc-800 text-zinc-300 border border-zinc-700/50 cursor-default' 
                         : 'bg-zinc-750 hover:bg-zinc-700 text-slate-100 border border-zinc-750'
@@ -5029,17 +5378,26 @@ alter table public.comments enable row level security;`}
                 </div>
 
                 {/* Sub Plan 2: Teen Passion */}
-                <div className={`p-3.5 rounded-xl border transition-all ${activePlanSelection === 'teen_passion' ? 'border-indigo-505 bg-indigo-950/10' : 'border-slate-900 bg-slate-900/10 hover:bg-slate-900/20'}`}>
+                <div className={`p-4 rounded-xl border-2 transition-all duration-300 ${
+                  activePlanSelection === 'teen_passion' 
+                    ? 'border-indigo-500 bg-indigo-950/30 shadow-[0_0_15px_rgba(99,102,241,0.2)]' 
+                    : 'border-slate-900 bg-slate-950/40 hover:bg-slate-900/20'
+                }`}>
                   <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-[8px] font-mono tracking-widest text-indigo-400 font-extrabold uppercase">Youth Favorite</span>
-                      <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1">TEEN PASSION 🚀</h4>
+                    <div className="flex gap-2 items-center">
+                      <div className="p-1.5 rounded-lg bg-indigo-950 border border-indigo-700 text-indigo-400">
+                        <Gauge className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <span className="text-[8px] font-mono tracking-widest text-indigo-400 font-extrabold uppercase">Youth Favorite</span>
+                        <h4 className="text-xs font-black text-indigo-100 flex items-center gap-1">TEEN PASSION 🚀</h4>
+                      </div>
                     </div>
                     <span className="text-xs font-black font-mono text-indigo-300">$1.99 <span className="text-[8px] font-normal text-indigo-550">/mo</span></span>
                   </div>
-                  <div className="text-[9.5px] text-zinc-400 leading-relaxed mt-2 space-y-1">
+                  <div className="text-[9.5px] text-zinc-400 leading-relaxed mt-3 space-y-1 pl-1">
                     <p>Pocket-money friendly. Explores the limits of your vehicle passion:</p>
-                    <ul className="list-disc list-inside text-[8.5px] text-indigo-400/80 space-y-0.5 font-mono">
+                    <ul className="list-disc list-inside text-[8.5px] text-indigo-400/85 space-y-0.5 font-mono">
                       <li>• Up to 15 Car Scans limit</li>
                       <li>• Compare up to 2 vehicles at once</li>
                       <li>• Up to 3 Spotter Card broadcasts</li>
@@ -5049,10 +5407,10 @@ alter table public.comments enable row level security;`}
                   </div>
                   <button 
                     onClick={() => handleSelectPlan('teen_passion')}
-                    className={`w-full mt-3 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase transition ${
+                    className={`w-full mt-3.5 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase transition ${
                       selectedPlanTier === 'teen_passion' 
                         ? 'bg-indigo-900/20 text-indigo-400 border border-indigo-900/50 cursor-default' 
-                        : 'bg-indigo-650 hover:bg-indigo-500 text-white shadow-lg'
+                        : 'bg-indigo-650 hover:bg-indigo-550 text-white shadow-lg cursor-pointer'
                     }`}
                   >
                     {selectedPlanTier === 'teen_passion' ? "Current Active Plan" : "Upgrade to Teen Passion"}
@@ -5060,15 +5418,24 @@ alter table public.comments enable row level security;`}
                 </div>
 
                 {/* Sub Plan 3: Gasoline Gold */}
-                <div className={`p-3.5 rounded-xl border transition-all ${activePlanSelection === 'gasoline_gold' ? 'border-amber-500 bg-amber-950/10' : 'border-slate-900 bg-slate-900/10 hover:bg-slate-900/20'}`}>
+                <div className={`p-4 rounded-xl border-2 transition-all duration-300 ${
+                  activePlanSelection === 'gasoline_gold' 
+                    ? 'border-amber-500 bg-amber-950/20 shadow-[0_0_15px_rgba(245,158,11,0.2)]' 
+                    : 'border-slate-900 bg-slate-950/40 hover:bg-slate-900/20'
+                }`}>
                   <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-[8px] font-mono tracking-widest text-amber-500 font-extrabold uppercase">Education & Engineering</span>
-                      <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1">GASOLINE GOLD 🏆</h4>
+                    <div className="flex gap-2 items-center">
+                      <div className="p-1.5 rounded-lg bg-amber-950 border border-amber-800 text-amber-400">
+                        <Sparkles className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <span className="text-[8px] font-mono tracking-widest text-amber-500 font-extrabold uppercase">Education & Engineering</span>
+                        <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1">GASOLINE GOLD 🏆</h4>
+                      </div>
                     </div>
                     <span className="text-xs font-black font-mono text-amber-400">$4.99 <span className="text-[8px] font-normal text-amber-600">/mo</span></span>
                   </div>
-                  <div className="text-[9.5px] text-zinc-400 leading-relaxed mt-2 space-y-1">
+                  <div className="text-[9.5px] text-zinc-400 leading-relaxed mt-3 space-y-1 pl-1">
                     <p>STEM Enthusiast Co-Pilot License. Complete ultimate tracking control:</p>
                     <ul className="list-disc list-inside text-[8.5px] text-amber-400 space-y-0.5 font-mono">
                       <li>• Unlimited Car Scans (Unlimited)</li>
@@ -5080,10 +5447,10 @@ alter table public.comments enable row level security;`}
                   </div>
                   <button 
                     onClick={() => handleSelectPlan('gasoline_gold')}
-                    className={`w-full mt-3 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase transition ${
+                    className={`w-full mt-3.5 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase transition ${
                       selectedPlanTier === 'gasoline_gold' 
                         ? 'bg-amber-900/20 text-amber-400 border border-amber-900/50 cursor-default' 
-                        : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold shadow-lg'
+                        : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold shadow-lg cursor-pointer'
                     }`}
                   >
                     {selectedPlanTier === 'gasoline_gold' ? "Current Active Plan" : "Upgrade to Gasoline Gold"}
