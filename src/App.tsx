@@ -25,6 +25,58 @@ import {
   supabase
 } from "./lib/supabase";
 
+// ----------------------------------------------------
+// BROWSER LOCAL & SESSION STORAGE COMPILATION OVERRIDES
+// ----------------------------------------------------
+const inMemoryLocalStorage: Record<string, string> = {};
+const localStorageMock = {
+  getItem: (key: string) => {
+    return inMemoryLocalStorage[key] !== undefined ? inMemoryLocalStorage[key] : null;
+  },
+  setItem: (key: string, value: string) => {
+    inMemoryLocalStorage[key] = String(value);
+  },
+  removeItem: (key: string) => {
+    delete inMemoryLocalStorage[key];
+  },
+  clear: () => {
+    Object.keys(inMemoryLocalStorage).forEach(k => delete inMemoryLocalStorage[k]);
+  },
+  key: (index: number) => {
+    return Object.keys(inMemoryLocalStorage)[index] || null;
+  },
+  get length() {
+    return Object.keys(inMemoryLocalStorage).length;
+  }
+};
+
+const inMemorySessionStorage: Record<string, string> = {
+  "whipcheck_admin_session": "false"
+};
+const sessionStorageMock = {
+  getItem: (key: string) => {
+    return inMemorySessionStorage[key] !== undefined ? inMemorySessionStorage[key] : null;
+  },
+  setItem: (key: string, value: string) => {
+    inMemorySessionStorage[key] = String(value);
+  },
+  removeItem: (key: string) => {
+    delete inMemorySessionStorage[key];
+  },
+  clear: () => {
+    Object.keys(inMemorySessionStorage).forEach(k => delete inMemorySessionStorage[k]);
+  },
+  key: (index: number) => {
+    return Object.keys(inMemorySessionStorage)[index] || null;
+  },
+  get length() {
+    return Object.keys(inMemorySessionStorage).length;
+  }
+};
+
+const localStorage = localStorageMock;
+const sessionStorage = sessionStorageMock;
+
 export interface AppTheme {
   id: string;
   name: string;
@@ -1531,6 +1583,43 @@ alter table public.comments enable row level security;
 -- Create policy to allow public access to comments
 create policy "Allow public access to comments"
   on public.comments
+  for all
+  using (true)
+  with check (true);
+
+-- Create custom user security details on Supabase
+create table public.whipcheck_users (
+  id text primary key,
+  username text not null,
+  email text not null unique,
+  password_hash text not null,
+  is_verified boolean default false,
+  otp text,
+  otp_expires bigint,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS) for custom user data pool
+alter table public.whipcheck_users enable row level security;
+
+create policy "Allow public access to whipcheck_users"
+  on public.whipcheck_users
+  for all
+  using (true)
+  with check (true);
+
+-- Create computer vision image cache on Supabase
+create table public.whipcheck_identify_cache (
+  key text primary key,
+  data text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS) for computer vision image cache
+alter table public.whipcheck_identify_cache enable row level security;
+
+create policy "Allow public access to whipcheck_identify_cache"
+  on public.whipcheck_identify_cache
   for all
   using (true)
   with check (true);`;

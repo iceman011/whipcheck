@@ -1,6 +1,33 @@
 import { createClient } from "@supabase/supabase-js";
 import { IdentifiedCar } from "../types";
 
+// ----------------------------------------------------
+// BROWSER LOCAL STORAGE COMPILATION OVERRIDES
+// ----------------------------------------------------
+const inMemoryLocalStorage: Record<string, string> = {};
+const localStorageMock = {
+  getItem: (key: string) => {
+    return inMemoryLocalStorage[key] !== undefined ? inMemoryLocalStorage[key] : null;
+  },
+  setItem: (key: string, value: string) => {
+    inMemoryLocalStorage[key] = String(value);
+  },
+  removeItem: (key: string) => {
+    delete inMemoryLocalStorage[key];
+  },
+  clear: () => {
+    Object.keys(inMemoryLocalStorage).forEach(k => delete inMemoryLocalStorage[k]);
+  },
+  key: (index: number) => {
+    return Object.keys(inMemoryLocalStorage)[index] || null;
+  },
+  get length() {
+    return Object.keys(inMemoryLocalStorage).length;
+  }
+};
+
+const localStorage = localStorageMock;
+
 // Get Supabase credentials dynamically, optionally fallback to localStorage overrides
 let activeSupabaseUrl = localStorage.getItem("whipcheck_supabase_url") || import.meta.env.VITE_SUPABASE_URL || "";
 let activeSupabaseAnonKey = localStorage.getItem("whipcheck_supabase_anon_key") || import.meta.env.VITE_SUPABASE_ANON_KEY || "";
