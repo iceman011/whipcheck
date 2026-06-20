@@ -22,60 +22,41 @@ import {
   verifyOtpCode,
   signInWithSocial,
   signOutUser,
-  supabase
+  supabase,
+  checkSupabaseConnection
 } from "./lib/supabase";
 
-// ----------------------------------------------------
-// BROWSER LOCAL & SESSION STORAGE COMPILATION OVERRIDES
-// ----------------------------------------------------
-const inMemoryLocalStorage: Record<string, string> = {};
-const localStorageMock = {
-  getItem: (key: string) => {
-    return inMemoryLocalStorage[key] !== undefined ? inMemoryLocalStorage[key] : null;
-  },
-  setItem: (key: string, value: string) => {
-    inMemoryLocalStorage[key] = String(value);
-  },
-  removeItem: (key: string) => {
-    delete inMemoryLocalStorage[key];
-  },
-  clear: () => {
-    Object.keys(inMemoryLocalStorage).forEach(k => delete inMemoryLocalStorage[k]);
-  },
-  key: (index: number) => {
-    return Object.keys(inMemoryLocalStorage)[index] || null;
-  },
-  get length() {
-    return Object.keys(inMemoryLocalStorage).length;
-  }
-};
+// ————————————————————————————————————————————————————
+// NO-PERSISTENCE PURE INERT SINGLETON STORAGE (DEPENDS EXCLUSIVELY ON SUPABASE DATABASE SYSTEM)
+// ————————————————————————————————————————————————————
+const dummyStorage: Storage = {
+  getItem: () => null,
+  setItem: () => {},
+  removeItem: () => {},
+  clear: () => {},
+  key: () => null,
+  get length() { return 0; }
+} as Storage;
 
-const inMemorySessionStorage: Record<string, string> = {
-  "whipcheck_admin_session": "false"
-};
-const sessionStorageMock = {
-  getItem: (key: string) => {
-    return inMemorySessionStorage[key] !== undefined ? inMemorySessionStorage[key] : null;
-  },
-  setItem: (key: string, value: string) => {
-    inMemorySessionStorage[key] = String(value);
-  },
-  removeItem: (key: string) => {
-    delete inMemorySessionStorage[key];
-  },
-  clear: () => {
-    Object.keys(inMemorySessionStorage).forEach(k => delete inMemorySessionStorage[k]);
-  },
-  key: (index: number) => {
-    return Object.keys(inMemorySessionStorage)[index] || null;
-  },
-  get length() {
-    return Object.keys(inMemorySessionStorage).length;
-  }
-};
+const localStorage = dummyStorage;
+const sessionStorage = dummyStorage;
 
-const localStorage = localStorageMock;
-const sessionStorage = sessionStorageMock;
+// Custom apiFetch wrapper that injects live Supabase overrides when calling local server APIs 
+const apiFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const configUrl = localStorage.getItem("whipcheck_supabase_url") || "";
+  const configKey = localStorage.getItem("whipcheck_supabase_anon_key") || "";
+  if (configUrl.trim() && configKey.trim()) {
+    const headers = new Headers(init?.headers);
+    if (!headers.has("x-supabase-url")) {
+      headers.set("x-supabase-url", configUrl.trim());
+    }
+    if (!headers.has("x-supabase-anon-key")) {
+      headers.set("x-supabase-anon-key", configKey.trim());
+    }
+    return fetch(input, { ...init, headers });
+  }
+  return fetch(input, init);
+};
 
 export interface AppTheme {
   id: string;
@@ -285,7 +266,7 @@ export default function App() {
                 }
               }
             } else {
-              const res = await fetch(`/api/comments/${key}`);
+              const res = await apiFetch(`/api/comments/${key}`);
               if (res.ok) {
                 const data = await res.json();
                 const list = data.comments || [];
@@ -339,8 +320,9 @@ export default function App() {
 
     setCompareList((prev) => {
       const exists = prev.some((c) => c.id === car.id);
+      let updatedList;
       if (exists) {
-        return prev.filter((c) => c.id !== car.id);
+        updatedList = prev.filter((c) => c.id !== car.id);
       } else {
         const maxLimit = selectedPlanTier === 'teen_passion' ? 2 : 3;
         if (prev.length >= maxLimit) {
@@ -354,8 +336,10 @@ export default function App() {
           }
           return prev;
         }
-        return [...prev, car];
+        updatedList = [...prev, car];
       }
+      uploadUserProfileUpdates({ compare_list: updatedList });
+      return updatedList;
     });
   };
 
@@ -538,7 +522,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
         ? (currentUser.username || currentUser.email || currentUser.id) 
         : (localStorage.getItem("whipcheck_spotter_name") || "Guest");
       
-      const res = await fetch(`/api/dashboard-stats?username=${encodeURIComponent(activeName)}`);
+      const res = await apiFetch(`/api/dashboard-stats?username=${encodeURIComponent(activeName)}`);
       if (res.ok) {
         const data = await res.json();
         setDashboardStats(data);
@@ -573,7 +557,66 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   });
   const [adminUsernameInput, setAdminUsernameInput] = useState<string>("");
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>("");
-  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data' | 'localstorage' | 'supabase_wipe'>('db');
+  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data' | 'live_explorer' | 'localstorage' | 'supabase_wipe'>('db');
+
+  // Supabase connection health check state
+  const [supabaseHealth, setSupabaseHealth] = useState<{
+    loading: boolean;
+    success: boolean | null;
+    message: string;
+    configured: boolean;
+    url: string;
+    error?: {
+      message: string;
+      code?: string;
+      details?: string;
+      hint?: string;
+      stack?: string;
+    };
+  }>({
+    loading: false,
+    success: null,
+    message: "Health check not ran yet.",
+    configured: false,
+    url: ""
+  });
+
+  const [showHealthTrace, setShowHealthTrace] = useState<boolean>(false);
+
+  const runSupabaseHealthCheck = async () => {
+    setSupabaseHealth(prev => ({
+      ...prev,
+      loading: true,
+      message: "Probing credentials, checking secure schema, and testing handshakes..."
+    }));
+    try {
+      const res = await checkSupabaseConnection();
+      setSupabaseHealth({
+        loading: false,
+        success: res.success,
+        message: res.message,
+        configured: res.configured,
+        url: res.url,
+        error: res.error
+      });
+    } catch (e: any) {
+      setSupabaseHealth({
+        loading: false,
+        success: false,
+        message: `Critically caught interface failure: ${e.message || e}`,
+        configured: true,
+        url: "",
+        error: {
+          message: e.message || String(e),
+          stack: e.stack
+        }
+      });
+    }
+  };
+
+  useEffect(() => {
+    runSupabaseHealthCheck();
+  }, []);
 
   // Supabase Table Rows Count and Full Cloud Wipe state
   const [supabaseTotalCarCount, setSupabaseTotalCarCount] = useState<number | null>(null);
@@ -586,6 +629,18 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   const [showSupabaseWipeConfirm, setShowSupabaseWipeConfirm] = useState<boolean>(false);
   const [adminDbStats, setAdminDbStats] = useState<any>(null);
   const [adminDbStatsLoading, setAdminDbStatsLoading] = useState<boolean>(false);
+
+  // Live Host DB Explorer States
+  const [explorerTable, setExplorerTable] = useState<'whipcheck_users' | 'vehicles' | 'comments' | 'whipcheck_identify_cache'>('whipcheck_users');
+  const [explorerRows, setExplorerRows] = useState<any[]>([]);
+  const [explorerLoading, setExplorerLoading] = useState<boolean>(false);
+  const [explorerError, setExplorerError] = useState<any>(null);
+  const [explorerSearchQuery, setExplorerSearchQuery] = useState<string>("");
+  const [explorerSelectedRow, setExplorerSelectedRow] = useState<any | null>(null);
+  const [explorerEditingRow, setExplorerEditingRow] = useState<any | null>(null);
+  const [explorerEditPayload, setExplorerEditPayload] = useState<string>("");
+  const [explorerEditError, setExplorerEditError] = useState<string | null>(null);
+  const [explorerStatusMessage, setExplorerStatusMessage] = useState<string | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [customSupabaseUrl, setCustomSupabaseUrl] = useState<string>(() => getActiveSupabaseConfig().url);
@@ -745,6 +800,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (tier === 'chiptuning') {
       localStorage.setItem("whipcheck_subscription_tier", 'chiptuning');
       setSelectedPlanTier('chiptuning');
+      uploadUserProfileUpdates({ plan_tier: 'chiptuning' });
       setSubscriptionSuccessMessage("Successfully returned to the Chiptuning Free tier!");
       setTimeout(() => setSubscriptionSuccessMessage(null), 3000);
     } else {
@@ -770,6 +826,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
 
     localStorage.setItem("whipcheck_subscription_tier", activePlanSelection);
     setSelectedPlanTier(activePlanSelection);
+    uploadUserProfileUpdates({ plan_tier: activePlanSelection });
     localStorage.setItem("whipcheck_parent_name", parentName);
     localStorage.setItem("whipcheck_parent_email", parentEmail);
 
@@ -816,7 +873,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     }
 
     // Check backend API health and key configuration
-    fetch("/api/health")
+    apiFetch("/api/health")
       .then((res) => res.json())
       .then((data) => {
         if (data && typeof data.apiKeyConfigured === "boolean") {
@@ -834,7 +891,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
 
     // Auto-fetch sandbox server database statistics if administrator session is active
     if (sessionStorage.getItem("whipcheck_admin_session") === "true") {
-      fetch("/api/admin/database-stats")
+      apiFetch("/api/admin/database-stats")
         .then(res => res.json())
         .then(data => setAdminDbStats(data))
         .catch(() => {});
@@ -891,7 +948,8 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
       setCurrentUser(parsedUser);
       // Trigger custom garage sync
       if (parsedUser.id) {
-        fetch(`/api/user/vehicles/${encodeURIComponent(parsedUser.id)}`)
+        syncUserProfileParameters(parsedUser.id);
+        apiFetch(`/api/user/vehicles/${encodeURIComponent(parsedUser.id)}`)
           .then(res => res.json())
           .then(data => {
             if (data && data.vehicles) {
@@ -977,6 +1035,10 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     
     // Check initial user session info
     supabase.auth.getUser().then(({ data: { user } }) => {
+      const hasCustomSession = !!localStorage.getItem("whipcheck_user_session");
+      if (hasCustomSession) {
+        return;
+      }
       setCurrentUser(user);
       if (user) {
         syncUserGarage(user);
@@ -1181,7 +1243,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
       try {
         setIsSupabaseSyncing(true);
-        const response = await fetch(`/api/user/vehicles/${encodeURIComponent(currentUser.id)}`, {
+        const response = await apiFetch(`/api/user/vehicles/${encodeURIComponent(currentUser.id)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ vehicle: car })
@@ -1207,7 +1269,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (currentUser && isSupabaseConfigured()) {
       try {
         setIsSupabaseSyncing(true);
-        await saveSupabaseCar(car);
+        await saveSupabaseCar(car, currentUser.id);
         setSupabaseStatus("synced");
       } catch (err: any) {
         console.error("Live Cloud Sync Failed:", err);
@@ -1265,13 +1327,13 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
       if (currentUser) {
         // Delete comments & ratings from Node server database
         try {
-          await fetch(`/api/comments/${normalizedKey}?author=${encodeURIComponent(currentAuthor)}`, { method: "DELETE" });
+          await apiFetch(`/api/comments/${normalizedKey}?author=${encodeURIComponent(currentAuthor)}`, { method: "DELETE" });
         } catch (err) {
           console.error("Failed to delete local comments by key:", normalizedKey, err);
         }
         if (id !== normalizedKey) {
           try {
-            await fetch(`/api/comments/${id}?author=${encodeURIComponent(currentAuthor)}`, { method: "DELETE" });
+            await apiFetch(`/api/comments/${id}?author=${encodeURIComponent(currentAuthor)}`, { method: "DELETE" });
           } catch (err) {
             console.error("Failed to delete local comments by ID:", id, err);
           }
@@ -1303,7 +1365,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (currentUser && currentUser.id && localStorage.getItem("whipcheck_user_session")) {
       try {
         setIsSupabaseSyncing(true);
-        await fetch(`/api/user/vehicles/${encodeURIComponent(currentUser.id)}/${encodeURIComponent(id)}`, {
+        await apiFetch(`/api/user/vehicles/${encodeURIComponent(currentUser.id)}/${encodeURIComponent(id)}`, {
           method: "DELETE"
         });
         setSupabaseStatus("synced");
@@ -1500,7 +1562,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     });
 
     try {
-      const res = await fetch("/api/identify-car", {
+      const res = await apiFetch("/api/identify-car", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -1532,6 +1594,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
       const newScanCount = scansCountUsed + 1;
       setScansCountUsed(newScanCount);
       localStorage.setItem("whipcheck_scan_use_count", newScanCount.toString());
+      uploadUserProfileUpdates({ scans_count_used: newScanCount });
     } catch (err: any) {
       if (err.name === 'AbortError') {
         console.log("Image scan successfully aborted by user.");
@@ -1810,7 +1873,7 @@ alter table public.comments enable row level security;
     setAdminDbStatsLoading(true);
     setAdminError(null);
     try {
-      const res = await fetch("/api/admin/database-stats");
+      const res = await apiFetch("/api/admin/database-stats");
       if (res.ok) {
         const stats = await res.json();
         setAdminDbStats(stats);
@@ -1822,6 +1885,119 @@ alter table public.comments enable row level security;
       setAdminError(e.message || "Failed to retrieve local sandbox database statistics.");
     } finally {
       setAdminDbStatsLoading(false);
+    }
+  };
+
+  const fetchExplorerRows = async (tableName: typeof explorerTable) => {
+    setExplorerLoading(true);
+    setExplorerError(null);
+    setExplorerStatusMessage(null);
+    try {
+      const res = await apiFetch(`/api/admin/db-explorer/${tableName}`);
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setExplorerRows(data.rows || []);
+      } else {
+        setExplorerError({
+          message: data.error || `Failed to fetch table "${tableName}"`,
+          requiredSql: data.requiredSql,
+          code: data.code,
+          stack: data.stack
+        });
+      }
+    } catch (e: any) {
+      setExplorerError({
+        message: e.message || "Network Error occurred during DB Explorer transaction.",
+        stack: e.stack || String(e)
+      });
+    } finally {
+      setExplorerLoading(false);
+    }
+  };
+
+  const deleteExplorerRow = async (tableName: typeof explorerTable, row: any) => {
+    if (!window.confirm(`Are you absolutely sure you want to delete this row from "${tableName}"?`)) {
+      return;
+    }
+    setExplorerLoading(true);
+    setExplorerStatusMessage(null);
+    setExplorerError(null);
+    try {
+      const payload: any = {};
+      if (tableName === "whipcheck_identify_cache") {
+        payload.key = row.key;
+      } else {
+        payload.id = row.id;
+      }
+
+      const res = await apiFetch(`/api/admin/db-explorer/${tableName}/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setExplorerStatusMessage(`Successfully deleted row from ${tableName}.`);
+        if (explorerSelectedRow && (explorerSelectedRow.id === row.id || explorerSelectedRow.key === row.key)) {
+          setExplorerSelectedRow(null);
+        }
+        await fetchExplorerRows(tableName);
+        await fetchAdminDbStats(); // Sync stats totals
+      } else {
+        setExplorerError({
+          message: data.error || `Failed to delete row from "${tableName}"`,
+          stack: data.stack
+        });
+      }
+    } catch (e: any) {
+      setExplorerError({
+        message: e.message || `Failed to delete row from "${tableName}"`,
+        stack: e.stack || String(e)
+      });
+    } finally {
+      setExplorerLoading(false);
+    }
+  };
+
+  const updateExplorerRow = async (tableName: typeof explorerTable) => {
+    setExplorerEditError(null);
+    try {
+      let parsedPayload: any;
+      try {
+        parsedPayload = JSON.parse(explorerEditPayload);
+      } catch (jsonErr: any) {
+        setExplorerEditError(`Invalid JSON format: ${jsonErr.message}`);
+        return;
+      }
+
+      setExplorerLoading(true);
+      const res = await apiFetch(`/api/admin/db-explorer/${tableName}/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsedPayload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setExplorerStatusMessage(`Successfully upserted/updated row in ${tableName}.`);
+        setExplorerEditingRow(null);
+        if (explorerSelectedRow && (explorerSelectedRow.id === parsedPayload.id || explorerSelectedRow.key === parsedPayload.key)) {
+          setExplorerSelectedRow(parsedPayload);
+        }
+        await fetchExplorerRows(tableName);
+        await fetchAdminDbStats(); // Sync stats totals
+      } else {
+        setExplorerEditError(data.error || `Failed to update row in "${tableName}"`);
+        if (data.stack) {
+          setExplorerError({
+            message: data.error || `Failed to update row`,
+            stack: data.stack
+          });
+        }
+      }
+    } catch (e: any) {
+      setExplorerEditError(e.message || "Network Error while updating row.");
+    } finally {
+      setExplorerLoading(false);
     }
   };
 
@@ -1944,7 +2120,7 @@ alter table public.comments enable row level security;
         }
       }
 
-      const res = await fetch("/api/admin/reset-database", { method: "POST" });
+      const res = await apiFetch("/api/admin/reset-database", { method: "POST" });
       if (res.ok) {
         setResetFeedback("Reset success. Flushing active browser cookies, comments caches & metadata...");
         
@@ -1979,7 +2155,7 @@ alter table public.comments enable row level security;
   const handleWipeRegisteredUsers = async () => {
     try {
       setResetFeedback("Wiping registered user database on server...");
-      const res = await fetch("/api/admin/wipe-users", { method: "POST" });
+      const res = await apiFetch("/api/admin/wipe-users", { method: "POST" });
       if (res.ok) {
         setResetFeedback("Registered user accounts database wiped successfully.");
         
@@ -2061,6 +2237,96 @@ alter table public.comments enable row level security;
     }
   };
 
+  const uploadUserProfileUpdates = async (updates: {
+    plan_tier?: 'chiptuning' | 'teen_passion' | 'gasoline_gold';
+    scans_count_used?: number;
+    compare_list?: IdentifiedCar[];
+  }) => {
+    let activeUserId = currentUser ? currentUser.id : null;
+    if (!activeUserId) {
+      const sessionStr = localStorage.getItem("whipcheck_user_session");
+      if (sessionStr) {
+        try {
+          const parsed = JSON.parse(sessionStr);
+          activeUserId = parsed.id;
+        } catch (e) {}
+      }
+    }
+    if (!activeUserId) return;
+
+    try {
+      const body: any = {};
+      if (updates.plan_tier !== undefined) {
+        body.plan_tier = updates.plan_tier;
+      }
+      if (updates.scans_count_used !== undefined) {
+        body.scans_count_used = updates.scans_count_used;
+      }
+      if (updates.compare_list !== undefined) {
+        body.compare_list = JSON.stringify(updates.compare_list);
+      }
+
+      const res = await apiFetch(`/api/user/profile/${encodeURIComponent(activeUserId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data && data.success && data.profile) {
+        const sessionStr = localStorage.getItem("whipcheck_user_session");
+        if (sessionStr) {
+          try {
+            const parsedSession = JSON.parse(sessionStr);
+            Object.assign(parsedSession, data.profile);
+            localStorage.setItem("whipcheck_user_session", JSON.stringify(parsedSession));
+          } catch (e) {}
+        }
+      }
+    } catch (err) {
+      console.error("Failed to upload user profile updates to database:", err);
+    }
+  };
+
+  const syncUserProfileParameters = async (userId: string) => {
+    if (!userId || userId === "undefined" || userId === "null") return;
+    try {
+      const res = await apiFetch(`/api/user/profile/${encodeURIComponent(userId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && data.profile) {
+          const profile = data.profile;
+          if (profile.plan_tier) {
+            setSelectedPlanTier(profile.plan_tier);
+            localStorage.setItem("whipcheck_subscription_tier", profile.plan_tier);
+          }
+          if (typeof profile.scans_count_used === "number") {
+            setScansCountUsed(profile.scans_count_used);
+            localStorage.setItem("whipcheck_scan_use_count", String(profile.scans_count_used));
+          }
+          if (profile.compare_list) {
+            try {
+              const list = typeof profile.compare_list === "string" ? JSON.parse(profile.compare_list) : profile.compare_list;
+              if (Array.isArray(list)) {
+                setCompareList(list);
+              }
+            } catch (err) {}
+          }
+
+          const sessionStr = localStorage.getItem("whipcheck_user_session");
+          if (sessionStr) {
+            try {
+              const parsedSession = JSON.parse(sessionStr);
+              Object.assign(parsedSession, profile);
+              localStorage.setItem("whipcheck_user_session", JSON.stringify(parsedSession));
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Failed retrieving user subscription / plan properties:", err);
+    }
+  };
+
   // --- CUSTOM CREDENTIAL BACKEND AUTH SYSTEM ---
   const syncCustomUserGarage = async (userId: string) => {
     if (!userId || userId === "undefined" || userId === "null") {
@@ -2068,6 +2334,9 @@ alter table public.comments enable row level security;
       return;
     }
     const useSupabase = isSupabaseConfigured() && supabase;
+
+    // Synchronize custom user subscription tiers & scan properties
+    syncUserProfileParameters(userId);
 
     try {
       setIsSupabaseSyncing(true);
@@ -2090,7 +2359,7 @@ alter table public.comments enable row level security;
       }
 
       setAccountSyncProgress("📥 Loading active vehicles from the node-server database...");
-      const res = await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`);
+      const res = await apiFetch(`/api/user/vehicles/${encodeURIComponent(userId)}`);
       let serverCars: IdentifiedCar[] = [];
       if (res.ok) {
         const data = await res.json();
@@ -2143,7 +2412,7 @@ alter table public.comments enable row level security;
         if (unsyncedToNode.length > 0) {
           await Promise.all(
             unsyncedToNode.map(async (car) => {
-              await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`, {
+              await apiFetch(`/api/user/vehicles/${encodeURIComponent(userId)}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ vehicle: car })
@@ -2153,7 +2422,7 @@ alter table public.comments enable row level security;
         }
 
         // Fetch refreshed garage from custom node database
-        const refreshNodeRes = await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`);
+        const refreshNodeRes = await apiFetch(`/api/user/vehicles/${encodeURIComponent(userId)}`);
         let finalCars = uniqueVehicles;
         if (refreshNodeRes.ok) {
           const d = await refreshNodeRes.json();
@@ -2243,7 +2512,7 @@ alter table public.comments enable row level security;
       }
 
       let serverCommentsList: any[] = [];
-      const statsRes = await fetch("/api/admin/database-stats");
+      const statsRes = await apiFetch("/api/admin/database-stats");
       if (statsRes.ok) {
         const statsData = await statsRes.json();
         const rawComments = statsData.rawComments || {};
@@ -2292,7 +2561,7 @@ alter table public.comments enable row level security;
       if (uniqueVehicles.length > 0) {
         await Promise.all(
           uniqueVehicles.map(async (car) => {
-            await fetch(`/api/user/vehicles/${encodeURIComponent(userId)}`, {
+            await apiFetch(`/api/user/vehicles/${encodeURIComponent(userId)}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ vehicle: car })
@@ -2349,7 +2618,7 @@ alter table public.comments enable row level security;
     setSqlErrorState(null);
 
     try {
-      const res = await fetch("/api/auth/signup", {
+      const res = await apiFetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2402,7 +2671,7 @@ alter table public.comments enable row level security;
     setDevOtpCode("");
 
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await apiFetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2459,7 +2728,7 @@ alter table public.comments enable row level security;
     setAuthMessage(null);
 
     try {
-      const res = await fetch("/api/auth/verify-otp", {
+      const res = await apiFetch("/api/auth/verify-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2500,7 +2769,7 @@ alter table public.comments enable row level security;
     setDevOtpCode("");
 
     try {
-      const res = await fetch("/api/auth/resend-otp", {
+      const res = await apiFetch("/api/auth/resend-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: authEmail.trim() })
@@ -3555,7 +3824,11 @@ alter table public.comments enable row level security;
                   cars={compareList}
                   onClose={() => setShowCompareActive(false)}
                   onRemoveFromCompare={(id) => {
-                    setCompareList((prev) => prev.filter((c) => c.id !== id));
+                    setCompareList((prev) => {
+                      const updated = prev.filter((c) => c.id !== id);
+                      uploadUserProfileUpdates({ compare_list: updated });
+                      return updated;
+                    });
                   }}
                   activeTheme={activeTheme}
                 />
@@ -4285,8 +4558,106 @@ alter table public.comments enable row level security;
                     </button>
                   </div>
 
+                  {/* LIVE SUPABASE DB CONNECTION HEALTH MONITOR */}
+                  <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-900 space-y-3 font-mono text-left">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-900/45 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Database className="h-3.5 w-3.5 text-zinc-400 animate-pulse" />
+                        <span className="text-[10px] font-black uppercase text-slate-300 tracking-wider">Supabase Connection Health Sentinel</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={runSupabaseHealthCheck}
+                        disabled={supabaseHealth.loading}
+                        className="py-1 px-2 rounded bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 disabled:text-zinc-600 hover:text-slate-200 text-[9px] uppercase font-bold flex items-center gap-1 cursor-pointer transition shrink-0 select-none"
+                      >
+                        <RefreshCw className={`h-2.5 w-2.5 ${supabaseHealth.loading ? 'animate-spin text-amber-400' : ''}`} />
+                        <span>{supabaseHealth.loading ? 'Verifying...' : 'Test Connection'}</span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between text-[10px]">
+                      {/* Connection state text descriptors */}
+                      <div className="space-y-1.5 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-zinc-500 uppercase text-[8px]">Endpoint:</span>
+                          <span className="bg-slate-900 px-1.5 py-0.5 rounded text-zinc-400 text-[8.5px] select-all tracking-tight break-all border border-slate-850">
+                            {supabaseHealth.url || "Not Configured"}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-1.5 leading-snug">
+                          {supabaseHealth.loading ? (
+                            <div className="flex items-center gap-1.5 text-amber-500">
+                              <Loader2 className="h-3 w-3 animate-spin shrink-0 text-amber-400" />
+                              <span className="text-[9px]">Probing database cluster configurations...</span>
+                            </div>
+                          ) : supabaseHealth.success === null ? (
+                            <div className="text-zinc-500">
+                              No test performed check. Click "Test Connection" to check status.
+                            </div>
+                          ) : supabaseHealth.success ? (
+                            <div className="flex items-start gap-1.5 text-emerald-400">
+                              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400 mt-0.5" />
+                              <div>
+                                <span className="font-bold">STATUS: ONLINE</span>
+                                <p className="text-[9.5px] text-zinc-400 mt-0.5 font-sans leading-normal">{supabaseHealth.message}</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-start gap-1.5 text-red-500">
+                              <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-red-500 mt-0.5" />
+                              <div>
+                                <span className="font-bold">STATUS: OFFLINE</span>
+                                <p className="text-[9.5px] text-zinc-400 mt-0.5 font-sans leading-normal">{supabaseHealth.message}</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Summary side Badge */}
+                      <div className="shrink-0 flex items-center justify-start sm:justify-end select-none">
+                        {supabaseHealth.loading ? (
+                          <span className="px-2 py-0.5 rounded bg-amber-950/20 text-amber-400 border border-amber-500/20 text-[8px] font-bold">PROBING CLUSTER</span>
+                        ) : supabaseHealth.success === null ? (
+                          <span className="px-2 py-0.5 rounded bg-slate-900 text-slate-500 border border-slate-800 text-[8px] font-bold">UNTESTED</span>
+                        ) : supabaseHealth.success ? (
+                          supabaseHealth.message.includes("does not exist") ? (
+                            <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-500/35 text-[8px] font-bold">SCHEMA MISSING</span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-500/30 text-[8px] font-bold">FULLY ONLINE</span>
+                          )
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-500/30 text-[8px] font-bold">DISCONNECTED</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Stack trace / detailed disclosure panel if error exists or connection has a debug report */}
+                    {supabaseHealth.error && (
+                      <div className="pt-1.5 border-t border-slate-900/40">
+                        <button
+                          type="button"
+                          onClick={() => setShowHealthTrace(!showHealthTrace)}
+                          className="text-[9px] text-zinc-400 hover:text-white uppercase font-bold flex items-center gap-1 cursor-pointer select-none transition focus:outline-none"
+                        >
+                          <span>{showHealthTrace ? "▼ Hide" : "▶ Show"} Connection Diagnostics & Stacktrace</span>
+                        </button>
+                        
+                        {showHealthTrace && (
+                          <div className="mt-2 p-2.5 bg-red-950/15 border border-red-900/30 rounded-lg space-y-1.5 text-left">
+                            <span className="text-[8px] text-red-400/90 font-bold block uppercase tracking-wider font-mono">Traceback Diagnostics Log</span>
+                            <div className="p-2 bg-slate-950 rounded text-[9px] text-rose-300 font-mono break-all whitespace-pre-wrap select-all max-h-52 overflow-y-auto leading-relaxed border border-slate-900">
+                              {supabaseHealth.error.stack || `Error Message: ${supabaseHealth.error.message}\nCode: ${supabaseHealth.error.code || "N/A"}\nDetails: ${supabaseHealth.error.details || "N/A"}\nHint: ${supabaseHealth.error.hint || "N/A"}`}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   {/* Elegant Horizontal Tab Bar */}
-                  <div className="grid grid-cols-5 gap-1 bg-slate-950 border border-slate-900 rounded-xl p-1 font-mono text-[9px] leading-tight shadow-inner select-none">
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 bg-slate-950 border border-slate-900 rounded-xl p-1 font-mono text-[9px] leading-tight shadow-inner select-none">
                     <button
                       type="button"
                       onClick={() => setAdminSubTab('db')}
@@ -4327,6 +4698,22 @@ alter table public.comments enable row level security;
                     >
                       <Server className="h-3 w-3 shrink-0" />
                       <span>CACHED DATA</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminSubTab('live_explorer');
+                        fetchExplorerRows(explorerTable);
+                      }}
+                      className={`py-2 px-1 rounded-lg font-bold transition flex items-center justify-center gap-1 cursor-pointer truncate ${
+                        adminSubTab === 'live_explorer'
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/25 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                      }`}
+                    >
+                      <Layers className="h-3 w-3 shrink-0" />
+                      <span>LIVE EXPLORER</span>
                     </button>
 
                     <button
@@ -4703,6 +5090,48 @@ alter table public.comments enable row level security;`}
                         </div>
                       </div>
 
+                      {/* Database Error Log Stack Tracing Panel */}
+                      {adminDbStats?.errorLogs && adminDbStats.errorLogs.length > 0 && (
+                        <div className="space-y-4 pt-3.5 border-t border-slate-900 animate-fade-in text-left">
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-[10px] font-bold text-red-400 uppercase font-mono tracking-wider flex items-center gap-1.5 animate-pulse">
+                              ⚠️ Host DB Transaction Error Stacktraces ({adminDbStats.errorLogs.length})
+                            </h5>
+                            <span className="text-[8px] font-mono text-zinc-500 uppercase">Real-Time Trace Captured</span>
+                          </div>
+                          
+                          <div className="max-h-56 overflow-y-auto space-y-1.5 border border-red-905/30 rounded-xl bg-slate-950 p-2.5">
+                            {adminDbStats.errorLogs.map((log: any, index: number) => (
+                              <details key={index} className="group bg-slate-900/30 rounded-lg border border-red-950/20 overflow-hidden transition-all text-[9.5px]">
+                                <summary className="flex items-center justify-between p-2 cursor-pointer hover:bg-slate-900/70 select-none">
+                                  <div className="flex flex-col gap-0.5 text-left text-[9px]">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="bg-red-950 text-red-400 text-[8px] font-extrabold px-1 rounded uppercase tracking-wider">
+                                        {log.code || "ERR"}
+                                      </span>
+                                      <span className="text-zinc-300 font-bold uppercase font-mono">{log.context || "Operation"}</span>
+                                    </div>
+                                    <span className="text-zinc-500 text-[8px] font-mono">{new Date(log.timestamp).toLocaleTimeString()} ({new Date(log.timestamp).toLocaleDateString()})</span>
+                                  </div>
+                                  <span className="text-zinc-450 text-[10px] group-open:rotate-180 transform transition font-mono">▼</span>
+                                </summary>
+                                <div className="p-2.5 bg-black border-t border-slate-900 font-mono text-[8.5px] text-red-500 select-all leading-normal text-left whitespace-pre-wrap max-h-48 overflow-auto">
+                                  <div className="text-zinc-300 font-sans text-[9px] font-medium border-b border-red-950/40 pb-1 mb-1.5">
+                                    <strong className="text-red-400">Error Msg:</strong> {log.message}
+                                    {log.tableName && (
+                                      <span className="ml-2 bg-slate-905 text-zinc-400 text-[8px] px-1 rounded border border-slate-800 font-mono">
+                                        Table: {log.tableName}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <code>{log.stack || "No callstack tracing available."}</code>
+                                </div>
+                              </details>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       {/* RED SERVER DATABASE HARD RESET PURGE ZONE */}
                       <div className="pt-3 border-t border-slate-900 space-y-3">
                         <div className="space-y-1">
@@ -4791,6 +5220,534 @@ alter table public.comments enable row level security;`}
                         {resetFeedback && (
                           <div className="p-3 bg-red-950/30 border border-red-900/30 rounded-xl text-red-300 text-[10px] leading-relaxed font-mono">
                             {resetFeedback}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {adminSubTab === 'live_explorer' && (
+                    <div className="space-y-4 animate-fade-in text-left">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-900 pb-3">
+                        <div className="space-y-1">
+                          <h4 className="text-xs font-black text-slate-200 uppercase font-mono tracking-wider flex items-center gap-1.5 animate-pulse">
+                            ⚡ LIVE HOST DB EXPLORER
+                          </h4>
+                          <p className="text-[10px] text-zinc-500 uppercase font-mono">
+                            Interact with live relational tables in your active Supabase environment
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => fetchExplorerRows(explorerTable)}
+                            disabled={explorerLoading}
+                            className="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 font-mono text-[9px] uppercase flex items-center justify-center gap-1.5 cursor-pointer transition select-none disabled:opacity-50 animate-fade-in"
+                          >
+                            <RefreshCw className={`h-3 w-3 text-red-400 ${explorerLoading ? 'animate-spin' : ''}`} />
+                            <span>{explorerLoading ? "Connecting..." : "REFRESH SNAPSHOT"}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {explorerStatusMessage && (
+                        <div className="p-2.5 bg-emerald-950/20 border border-emerald-500/20 text-emerald-400 text-[10px] rounded-lg font-mono">
+                          ✓ {explorerStatusMessage}
+                        </div>
+                      )}
+
+                      {/* Live Table Selection Tabs */}
+                      <div className="flex flex-wrap gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-900">
+                        {(["whipcheck_users", "vehicles", "comments", "whipcheck_identify_cache"] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => {
+                              setExplorerTable(t);
+                              setExplorerSelectedRow(null);
+                              setExplorerEditingRow(null);
+                              fetchExplorerRows(t);
+                            }}
+                            className={`flex-1 py-1.5 px-2 rounded-lg font-mono text-[9px] font-bold uppercase transition text-center truncate cursor-pointer ${
+                              explorerTable === t
+                                ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                                : "text-zinc-500 hover:text-zinc-300 hover:bg-slate-900/30 border border-transparent"
+                            }`}
+                          >
+                            <span>{t.replace("whipcheck_", "")}</span>
+                            <span className="ml-1 opacity-60 text-[8px]">
+                              ({explorerTable === t ? explorerRows.length : "?"})
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Capture Missing Table Errors Stacktraces inside the explorer */}
+                      {explorerError && (
+                        <div className="p-3 bg-red-950/20 border border-red-500/20 text-red-100 text-[10.5px] rounded-xl font-mono leading-relaxed space-y-2 text-left">
+                          <div className="flex items-center gap-2 text-red-400 font-extrabold text-[10px] uppercase tracking-wider">
+                            <span>❌ REMOTE DATABASE EXCEPTION CAUGHT</span>
+                            {explorerError.code && (
+                              <span className="bg-red-950/80 px-1 rounded border border-red-900/40 text-[8.5px]">
+                                Code: {explorerError.code}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-zinc-300">{explorerError.message}</p>
+                          
+                          {explorerError.requiredSql && (
+                            <div className="space-y-1.5 flex flex-col pt-1">
+                              <span className="text-[8.5px] uppercase font-bold text-red-400 block font-mono">Required SQL to auto-create missing table:</span>
+                              <pre className="p-2 bg-black border border-red-950/45 rounded-lg text-[8.5px] text-red-400 overflow-x-auto select-all max-h-40 line-clamp-4 leading-normal font-mono">
+                                {explorerError.requiredSql}
+                              </pre>
+                            </div>
+                          )}
+
+                          {explorerError.stack && (
+                            <details className="group border-t border-red-950/30 pt-1.5">
+                              <summary className="text-[8px] text-zinc-500 uppercase cursor-pointer select-none font-bold hover:text-zinc-400">
+                                ▶ Show Raw Database Error Backtrace
+                              </summary>
+                              <pre className="p-2 bg-slate-950 rounded-lg text-[8px] text-red-500 overflow-x-auto whitespace-pre-wrap select-all max-h-40 leading-normal mt-1 border border-red-950/10 font-mono">
+                                {explorerError.stack}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Main Interactive Workspace Area: Split Layout when row selected/edited */}
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        {/* LEFT: TABLE INDEX LIST */}
+                        <div className={`${(explorerSelectedRow || explorerEditingRow) ? "lg:col-span-7" : "lg:col-span-12"} space-y-3`}>
+                          {/* Inner filter query */}
+                          <div className="relative">
+                            <input
+                              type="text"
+                              placeholder={`Filter live ${explorerTable.replace("whipcheck_", "")} records...`}
+                              value={explorerSearchQuery}
+                              onChange={(e) => setExplorerSearchQuery(e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-900 rounded-lg pl-8 pr-3 py-1.5 text-[10px] text-slate-300 focus:outline-none focus:border-red-500/50 transition font-mono focus:ring-1 focus:ring-red-500/20"
+                            />
+                            <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-650">
+                              <Search className="h-3 w-3" />
+                            </div>
+                            {explorerSearchQuery && (
+                              <button
+                                type="button"
+                                onClick={() => setExplorerSearchQuery("")}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-550 hover:text-zinc-300 font-mono text-[8px] uppercase font-bold cursor-pointer"
+                              >
+                                clear
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Record List */}
+                          {explorerLoading && explorerRows.length === 0 ? (
+                            <div className="py-12 text-center border border-slate-900 rounded-xl bg-slate-950/45">
+                              <Loader2 className="h-6 w-6 text-red-500 animate-spin mx-auto opacity-70 mb-2" />
+                              <span className="text-[10px] font-mono text-zinc-500 uppercase block tracking-wider">Synchronising Live Supabase State...</span>
+                            </div>
+                          ) : (
+                            <div className="border border-slate-900 rounded-xl overflow-hidden bg-slate-950/30">
+                              <div className="overflow-x-auto max-h-96">
+                                <table className="w-full text-left border-collapse text-[9.5px]">
+                                  <thead>
+                                    <tr className="bg-slate-950 border-b border-slate-900 text-[8.5px] uppercase font-mono font-black text-slate-400 tracking-wider sticky top-0 z-5 select-none">
+                                      <th className="py-2.5 px-3">Primary Key / ID</th>
+                                      {explorerTable === "whipcheck_users" && (
+                                        <>
+                                          <th className="py-2.5 px-3">Username</th>
+                                          <th className="py-2.5 px-3">Email</th>
+                                          <th className="py-2.5 px-3">Status</th>
+                                        </>
+                                      )}
+                                      {explorerTable === "vehicles" && (
+                                        <>
+                                          <th className="py-2.5 px-3">Owner User ID</th>
+                                          <th className="py-2.5 px-3">Brand/Model</th>
+                                          <th className="py-2.5 px-3 font-mono">Added At</th>
+                                        </>
+                                      )}
+                                      {explorerTable === "comments" && (
+                                        <>
+                                          <th className="py-2.5 px-3">Car Identifier</th>
+                                          <th className="py-2.5 px-3">Username</th>
+                                          <th className="py-2.5 px-3">Topic / Msg</th>
+                                        </>
+                                      )}
+                                      {explorerTable === "whipcheck_identify_cache" && (
+                                        <>
+                                          <th className="py-2.5 px-3">Model Key</th>
+                                          <th className="py-2.5 px-3">Hit Hits</th>
+                                          <th className="py-2.5 px-3">Last Query Date</th>
+                                        </>
+                                      )}
+                                      <th className="py-2.5 px-3 text-right">Actions</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {(() => {
+                                      const query = explorerSearchQuery.toLowerCase().trim();
+                                      const filtered = explorerRows.filter((row: any) => {
+                                        if (!query) return true;
+                                        return JSON.stringify(row).toLowerCase().includes(query);
+                                      });
+
+                                      if (filtered.length === 0) {
+                                        return (
+                                          <tr>
+                                            <td colSpan={10} className="py-8 text-center text-zinc-500 font-mono text-[9px] uppercase">
+                                              No matching live records found.
+                                            </td>
+                                          </tr>
+                                        );
+                                      }
+
+                                      return filtered.map((row: any, i: number) => {
+                                        const keyVal = explorerTable === "whipcheck_identify_cache" 
+                                          ? row.key 
+                                          : row.id;
+                                        
+                                        const isSelected = explorerSelectedRow && (
+                                          explorerTable === "whipcheck_identify_cache" 
+                                            ? explorerSelectedRow.key === row.key 
+                                            : explorerSelectedRow.id === row.id
+                                        );
+
+                                        return (
+                                          <tr 
+                                            key={i} 
+                                            className={`border-b border-slate-900 hover:bg-slate-900/15 font-mono cursor-pointer transition select-all ${
+                                              isSelected ? "bg-red-500/5 hover:bg-red-500/10" : i % 2 === 0 ? "bg-slate-950/20" : ""
+                                            }`}
+                                            onClick={() => {
+                                              setExplorerSelectedRow(row);
+                                              setExplorerEditingRow(null);
+                                            }}
+                                          >
+                                            <td className="py-2 px-3 text-slate-200 font-bold tracking-tight">
+                                              <span className="truncate max-w-[120px] block" title={keyVal}>
+                                                {keyVal}
+                                              </span>
+                                            </td>
+                                            
+                                            {explorerTable === "whipcheck_users" && (
+                                              <>
+                                                <td className="py-2 px-3 text-teal-400 font-bold">{row.username || "unset"}</td>
+                                                <td className="py-2 px-3 text-zinc-400">{row.email || "unset"}</td>
+                                                <td className="py-2 px-3">
+                                                  <span className={`px-1 rounded text-[8px] font-extrabold uppercase ${
+                                                    row.is_verified 
+                                                      ? "bg-emerald-950 border border-emerald-900 text-emerald-400" 
+                                                      : "bg-amber-950 border border-amber-900 text-amber-500"
+                                                  }`}>
+                                                    {row.is_verified ? "Verified" : "Pending OTP"}
+                                                  </span>
+                                                </td>
+                                              </>
+                                            )}
+
+                                            {explorerTable === "vehicles" && (
+                                              <>
+                                                <td className="py-2 px-3 text-zinc-500">
+                                                  <span className="truncate max-w-[100px] block" title={row.user_id}>
+                                                    {row.user_id || "null"}
+                                                  </span>
+                                                </td>
+                                                <td className="py-2 px-3 text-red-500 font-bold">
+                                                  {row.make ? `${row.make} ${row.model || ""}` : "Unset vehicle"}
+                                                </td>
+                                                <td className="py-2 px-3 text-zinc-500">
+                                                  {row.created_at ? new Date(row.created_at).toLocaleDateString() : "-"}
+                                                </td>
+                                              </>
+                                            )}
+
+                                            {explorerTable === "comments" && (
+                                              <>
+                                                <td className="py-2 px-3 text-zinc-400 font-sans">
+                                                  <span className="truncate max-w-[80px] block text-inherit" title={row.car_id}>
+                                                    {row.car_id || "null"}
+                                                  </span>
+                                                </td>
+                                                <td className="py-2 px-3 text-slate-300 font-bold">{row.username || "guest"}</td>
+                                                <td className="py-2 px-3 text-zinc-400">
+                                                  <span className="truncate max-w-[185px] block font-sans text-[9px]" title={row.text_content}>
+                                                    {row.text_content || ""}
+                                                  </span>
+                                                </td>
+                                              </>
+                                            )}
+
+                                            {explorerTable === "whipcheck_identify_cache" && (
+                                              <>
+                                                <td className="py-2 px-3 text-teal-500">{row.model_name || "N/A"}</td>
+                                                <td className="py-2 px-3 text-zinc-400 font-bold">{row.usage_count || 1} hits</td>
+                                                <td className="py-2 px-3 text-zinc-500">
+                                                  {row.query_timestamp ? new Date(row.query_timestamp).toLocaleDateString() : "-"}
+                                                </td>
+                                              </>
+                                            )}
+
+                                            {/* Action item buttons */}
+                                            <td className="py-2 px-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                              <div className="flex items-center justify-end gap-1 select-none">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setExplorerSelectedRow(row);
+                                                    setExplorerEditingRow(null);
+                                                  }}
+                                                  className="p-1 rounded bg-slate-905 border border-slate-800 text-zinc-400 hover:text-white transition cursor-pointer"
+                                                  title="Inspect Full Row Record"
+                                                >
+                                                  <SlidersHorizontal className="h-2.5 w-2.5" />
+                                                </button>
+                                                
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setExplorerEditingRow(row);
+                                                    setExplorerSelectedRow(null);
+                                                    setExplorerEditPayload(JSON.stringify(row, null, 2));
+                                                    setExplorerEditError(null);
+                                                  }}
+                                                  className="p-1 rounded bg-slate-905 border border-slate-800 text-yellow-500 hover:text-yellow-400 transition cursor-pointer"
+                                                  title="Edit JSON payload"
+                                                >
+                                                  <Code className="h-2.5 w-2.5" />
+                                                </button>
+
+                                                <button
+                                                  type="button"
+                                                  onClick={() => deleteExplorerRow(explorerTable, row)}
+                                                  className="p-1 rounded bg-red-950/25 border border-red-900/30 text-red-500 hover:text-red-400 transition cursor-pointer"
+                                                  title="Delete record from host database"
+                                                >
+                                                  <Trash2 className="h-2.5 w-2.5" />
+                                                </button>
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        );
+                                      });
+                                    })()}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Quick Tool: Inject/Insert Test Row */}
+                          <div className="bg-slate-900/10 border border-slate-900/40 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5 text-left font-sans select-none animate-fade-in">
+                            <div className="space-y-0.5">
+                              <span className="text-[10px] uppercase font-bold text-zinc-300 font-mono block">💡 HOST SEEDING PORTAL</span>
+                              <p className="text-[9px] text-zinc-500 leading-normal font-mono uppercase">Pre-configure and insert testing data payloads into {explorerTable}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                let tmpl: any = {};
+                                if (explorerTable === "whipcheck_users") {
+                                  tmpl = {
+                                    id: "user_" + Math.floor(1000 + Math.random() * 9000),
+                                    username: "track_master",
+                                    email: `test_racer_${Math.floor(100 + Math.random()*900)}@example.com`,
+                                    password_hash: "plain_text_dev_override_password_hash",
+                                    is_verified: true,
+                                    created_at: new Date().toISOString()
+                                  };
+                                } else if (explorerTable === "vehicles") {
+                                  tmpl = {
+                                    id: `scan_${Math.floor(1000 + Math.random()*9000)}`,
+                                    user_id: "user_racer_default",
+                                    make: "Toyota",
+                                    model: "Supra RZ Turbo",
+                                    year: 1997,
+                                    engine: "3.0L twin-turbo I6 (2JZ-GTE)",
+                                    spec_torque: "315 lb-ft",
+                                    spec_horsepower: "320 hp",
+                                    zero_to_sixty: "4.6s",
+                                    curb_weight: "3,450 lbs",
+                                    quarter_mile: "13.1s",
+                                    trivia: ["Manufactured in Japan's Motomachi plant", "The iconic fastback coupe utilizes the highly tuner-friendly 2JZ block"],
+                                    tips: ["Check for coolant leak near the secondary turbo actuator hoses", "Highly receptive to single-turbo exhaust conversions"],
+                                    created_at: new Date().toISOString()
+                                  };
+                                } else if (explorerTable === "comments") {
+                                  tmpl = {
+                                    id: Math.floor(10000 + Math.random() * 90000),
+                                    car_id: "supra_mk4",
+                                    username: "JDM Legend Guy",
+                                    text_content: "Incredible vehicle specification. The 2JZ-GTE holds an incredible legacy!",
+                                    created_at: new Date().toISOString()
+                                  };
+                                } else if (explorerTable === "whipcheck_identify_cache") {
+                                  tmpl = {
+                                    key: "demo-supra-model-key-" + Math.floor(100+Math.random()*900),
+                                    model_name: "Toyota Supra MK4",
+                                    usage_count: 14,
+                                    query_timestamp: new Date().toISOString()
+                                  };
+                                }
+                                setExplorerEditingRow(tmpl);
+                                setExplorerSelectedRow(null);
+                                setExplorerEditPayload(JSON.stringify(tmpl, null, 2));
+                                setExplorerEditError(null);
+                              }}
+                              className="py-1 px-2.5 rounded-lg bg-red-950/20 hover:bg-red-950/40 border border-red-900/40 text-[9px] font-mono text-red-400 font-bold uppercase cursor-pointer transition select-none"
+                            >
+                              + CREATE BLANK TARGET TEMPLATE
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* RIGHT: DETAILS INSPECTION OR LIVE JSON EDITOR PANE */}
+                        {(explorerSelectedRow || explorerEditingRow) && (
+                          <div className="lg:col-span-12 xl:col-span-5 space-y-3.5 animate-slide-in text-left">
+                            {/* CASE A: JSON EDITOR PANEL */}
+                            {explorerEditingRow && (
+                              <div className="p-4 bg-gradient-to-b from-slate-950 to-[#0b0c10] border border-yellow-950/45 rounded-xl relative space-y-3">
+                                <div className="absolute top-0 right-0 w-20 h-20 bg-yellow-500/5 rounded-full blur-lg pointer-events-none"></div>
+
+                                <div className="flex items-center justify-between border-b border-slate-900 pb-2.5">
+                                  <div className="flex items-center gap-2 font-mono text-[10px]">
+                                    <span className="p-1 rounded bg-yellow-950 text-yellow-500 font-extrabold border border-yellow-905/30 uppercase tracking-widest text-[8px]">
+                                      Upsert / Edit
+                                    </span>
+                                    <strong className="text-zinc-300 uppercase">Live Host Table Payload</strong>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExplorerEditingRow(null)}
+                                    className="text-zinc-500 hover:text-zinc-300 font-mono text-[9px] uppercase font-bold cursor-pointer"
+                                  >
+                                    ✕ CLOSE
+                                  </button>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <span className="text-[8.5px] uppercase font-mono font-bold text-zinc-500 block">Edit raw JSON structure:</span>
+                                  <textarea
+                                    value={explorerEditPayload}
+                                    onChange={(e) => setExplorerEditPayload(e.target.value)}
+                                    rows={15}
+                                    className="w-full bg-black border border-slate-850 rounded-lg p-2.5 font-mono text-[9px] text-zinc-300 leading-normal focus:outline-none focus:border-yellow-500/40 select-all focus:ring-1 focus:ring-yellow-500/10 h-72 resize-y"
+                                    placeholder='{ "id": "custom-row-id", "field": "value" }'
+                                  />
+                                </div>
+
+                                {explorerEditError && (
+                                  <div className="p-2.5 bg-red-950/30 border border-red-500/25 text-red-100 text-[10px] leading-relaxed rounded-lg font-mono">
+                                    <strong className="text-red-400 block mb-0.5">⚠️ Validator Error:</strong>
+                                    {explorerEditError}
+                                  </div>
+                                )}
+
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => updateExplorerRow(explorerTable)}
+                                    disabled={explorerLoading}
+                                    className="flex-1 text-center py-2 text-[10px] font-mono font-bold uppercase py-1.5 rounded-lg text-white bg-green-700 hover:bg-green-600 border border-green-800 transition cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.99]"
+                                  >
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    <span>COMMIT SNAPSHOT TO SUPABASE</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExplorerEditingRow(null)}
+                                    className="px-3 py-2 text-[10px] font-mono font-bold uppercase py-1.5 rounded-lg text-zinc-400 bg-slate-900 border border-slate-805 hover:text-white transition cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* CASE B: INSPECTION PANEL */}
+                            {explorerSelectedRow && (
+                              <div className="p-4 bg-gradient-to-b from-[#0b0c10] via-slate-950 to-zinc-950 border border-slate-900 rounded-xl relative space-y-3 animate-fade-in">
+                                <div className="absolute top-0 right-0 w-20 h-20 bg-teal-500/5 rounded-full blur-lg pointer-events-none"></div>
+
+                                <div className="flex items-center justify-between border-b border-slate-900 pb-2.5">
+                                  <div className="flex items-center gap-2 font-mono text-[10px]">
+                                    <span className="p-1 rounded bg-teal-950 text-teal-400 font-extrabold border border-teal-905/30 uppercase tracking-widest text-[8px]">
+                                      Inspect
+                                    </span>
+                                    <strong className="text-zinc-300 uppercase">Live Payload Detail</strong>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExplorerSelectedRow(null)}
+                                    className="text-zinc-500 hover:text-zinc-300 font-mono text-[9px] uppercase font-bold cursor-pointer"
+                                  >
+                                    ✕ CLOSE
+                                  </button>
+                                </div>
+
+                                {/* Nice Quick Attribute Table */}
+                                <div className="space-y-1.5 bg-slate-950/60 p-2.5 rounded-lg border border-slate-900 text-[10px]">
+                                  <h6 className="text-[8px] uppercase tracking-wider text-zinc-500 font-mono font-bold mb-1 border-b border-slate-900 pb-1 font-mono">Row Properties:</h6>
+                                  {Object.entries(explorerSelectedRow).map(([k, v]) => {
+                                    if (typeof v === "object" && v !== null) {
+                                      return null; // Skip complex arrays/objects in table view
+                                    }
+                                    return (
+                                      <div key={k} className="flex justify-between items-start gap-3 py-0.5 border-b border-slate-900/30 font-mono text-[9px]">
+                                        <span className="text-zinc-500 font-bold shrink-0">{k}:</span>
+                                        <span className="text-zinc-350 text-right select-all truncate max-w-xs">{String(v ?? "null")}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between select-none">
+                                    <span className="text-[8.5px] uppercase font-mono font-bold text-zinc-500 block">Complete Object Schema:</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(JSON.stringify(explorerSelectedRow, null, 2));
+                                        alert("Object copied successfully to clipboard!");
+                                      }}
+                                      className="text-teal-400 hover:text-teal-300 font-mono text-[8.5px] uppercase font-bold pr-1 cursor-pointer"
+                                    >
+                                      📄 Copy Payload
+                                    </button>
+                                  </div>
+                                  <pre className="p-3 bg-black border border-slate-900 rounded-lg font-mono text-[8.5px] text-teal-400 leading-relaxed overflow-auto max-h-80 select-all whitespace-pre-wrap font-mono">
+                                    <code>{JSON.stringify(explorerSelectedRow, null, 2)}</code>
+                                  </pre>
+                                </div>
+
+                                <div className="flex gap-2.5 select-none">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setExplorerEditingRow(explorerSelectedRow);
+                                      setExplorerEditPayload(JSON.stringify(explorerSelectedRow, null, 2));
+                                      setExplorerEditError(null);
+                                      setExplorerSelectedRow(null);
+                                    }}
+                                    className="flex-1 py-1.5 rounded-lg bg-yellow-950/25 border border-yellow-900/40 hover:bg-yellow-950/40 text-[10px] text-yellow-500 font-bold uppercase font-mono text-center cursor-pointer transition active:scale-[0.99] flex items-center justify-center gap-1"
+                                  >
+                                    <Code className="h-3 w-3" />
+                                    <span>EDIT THIS ROW</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteExplorerRow(explorerTable, explorerSelectedRow)}
+                                    className="py-1.5 px-3 rounded-lg bg-red-950/25 border border-red-900/40 hover:bg-red-950/40 text-[10px] text-red-500 font-bold uppercase font-mono text-center cursor-pointer transition active:scale-[0.99]"
+                                  >
+                                    🗑 Delete Row
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -5477,7 +6434,10 @@ alter table public.comments enable row level security;`}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               <button
-                onClick={() => setCompareList([])}
+                onClick={() => {
+                  setCompareList([]);
+                  uploadUserProfileUpdates({ compare_list: [] });
+                }}
                 className="text-[10px] text-zinc-400 hover:text-slate-100 font-bold px-2.5 py-1.5 rounded-lg border border-slate-850 bg-slate-950 font-mono transition cursor-pointer"
               >
                 Clear

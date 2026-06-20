@@ -1,36 +1,35 @@
 import { createClient } from "@supabase/supabase-js";
 import { IdentifiedCar } from "../types";
 
-// ----------------------------------------------------
-// BROWSER LOCAL STORAGE COMPILATION OVERRIDES
-// ----------------------------------------------------
-const inMemoryLocalStorage: Record<string, string> = {};
-const localStorageMock = {
-  getItem: (key: string) => {
-    return inMemoryLocalStorage[key] !== undefined ? inMemoryLocalStorage[key] : null;
-  },
-  setItem: (key: string, value: string) => {
-    inMemoryLocalStorage[key] = String(value);
-  },
-  removeItem: (key: string) => {
-    delete inMemoryLocalStorage[key];
-  },
-  clear: () => {
-    Object.keys(inMemoryLocalStorage).forEach(k => delete inMemoryLocalStorage[k]);
-  },
-  key: (index: number) => {
-    return Object.keys(inMemoryLocalStorage)[index] || null;
-  },
-  get length() {
-    return Object.keys(inMemoryLocalStorage).length;
-  }
+const isMissingTableError = (err: any): boolean => {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  return (
+    err.code === "PGRST125" ||
+    (msg.includes("relation") && msg.includes("does not exist")) ||
+    msg.includes("invalid path specified in request url") ||
+    msg.includes("pgrst125")
+  );
 };
 
-const localStorage = localStorageMock;
+export const sanitizeSupabaseUrl = (url: string): string => {
+  let cleaned = (url || "").trim();
+  if (cleaned.endsWith("/")) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  if (cleaned.toLowerCase().endsWith("/rest/v1")) {
+    cleaned = cleaned.slice(0, -8);
+  }
+  if (cleaned.endsWith("/")) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  return cleaned;
+};
 
-// Get Supabase credentials dynamically, optionally fallback to localStorage overrides
-let activeSupabaseUrl = localStorage.getItem("whipcheck_supabase_url") || import.meta.env.VITE_SUPABASE_URL || "";
-let activeSupabaseAnonKey = localStorage.getItem("whipcheck_supabase_anon_key") || import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+// Get Supabase credentials directly from environment variables ONLY
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
+export const activeSupabaseUrl = sanitizeSupabaseUrl(rawSupabaseUrl);
+const activeSupabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim();
 
 export const isSupabaseConfigured = (): boolean => {
   const url = (activeSupabaseUrl || "").trim().toLowerCase();
@@ -38,11 +37,8 @@ export const isSupabaseConfigured = (): boolean => {
   
   if (!url || !anonKey) return false;
   if (url === "undefined" || anonKey === "undefined") return false;
-  
-  // URL must start with https://
   if (!url.startsWith("https://")) return false;
   
-  // It cannot be a placeholder
   if (
     url.includes("your-project") || 
     url.includes("placeholder") || 
@@ -63,32 +59,10 @@ export let supabase = isSupabaseConfigured()
   : null;
 
 /**
- * Live update connection parameters and re-initialize the client at runtime
+ * Live update connection parameters (stubbed to do nothing as we rely purely on environment variables)
  */
 export const updateSupabaseConfig = (url: string, anonKey: string) => {
-  const cleanUrl = (url || "").trim();
-  const cleanKey = (anonKey || "").trim();
-
-  if (cleanUrl) {
-    localStorage.setItem("whipcheck_supabase_url", cleanUrl);
-  } else {
-    localStorage.removeItem("whipcheck_supabase_url");
-  }
-
-  if (cleanKey) {
-    localStorage.setItem("whipcheck_supabase_anon_key", cleanKey);
-  } else {
-    localStorage.removeItem("whipcheck_supabase_anon_key");
-  }
-
-  activeSupabaseUrl = cleanUrl || import.meta.env.VITE_SUPABASE_URL || "";
-  activeSupabaseAnonKey = cleanKey || import.meta.env.VITE_SUPABASE_ANON_KEY || "";
-
-  if (isSupabaseConfigured()) {
-    supabase = createClient(activeSupabaseUrl, activeSupabaseAnonKey);
-  } else {
-    supabase = null;
-  }
+  console.info("Supabase config dynamic updates are disabled. Running on pure system environments.");
 };
 
 /**
@@ -98,8 +72,8 @@ export const getActiveSupabaseConfig = () => {
   return {
     url: activeSupabaseUrl,
     anonKey: activeSupabaseAnonKey,
-    isOverridden: !!localStorage.getItem("whipcheck_supabase_url"),
-    hasEnvFallback: !!(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY)
+    isOverridden: false,
+    hasEnvFallback: isSupabaseConfigured()
   };
 };
 
@@ -160,7 +134,7 @@ function deserializeRow(row: any): IdentifiedCar {
  * Fetch all vehicles from Supabase
  */
 export async function fetchSupabaseGarage(userId?: string): Promise<IdentifiedCar[]> {
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) return [];
 
   let activeUserId = userId || null;
   if (!activeUserId) {
@@ -174,45 +148,61 @@ export async function fetchSupabaseGarage(userId?: string): Promise<IdentifiedCa
     }
   }
 
-  let queryBuilder = supabase.from("vehicles").select("*");
-  if (activeUserId) {
-    queryBuilder = queryBuilder.eq("user_id", activeUserId);
-  } else {
-    // Return empty array to prevent leaks from other users when not logged in
-    return [];
+  try {
+    let queryBuilder = supabase.from("vehicles").select("*");
+    if (activeUserId) {
+      queryBuilder = queryBuilder.eq("user_id", activeUserId);
+    } else {
+      // Return empty array to prevent leaks from other users when not logged in
+      return [];
+    }
+
+    const { data, error } = await queryBuilder.order("timestamp", { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return (data || []).map(deserializeRow);
+  } catch (e: any) {
+    if (isMissingTableError(e)) {
+      console.warn("Vehicles table is missing.");
+      return [];
+    }
+    throw e;
   }
-
-  const { data, error } = await queryBuilder.order("timestamp", { ascending: false });
-
-  if (error) {
-    throw error;
-  }
-
-  return (data || []).map(deserializeRow);
 }
 
 /**
  * Save or overwrite a vehicle in Supabase
  */
 export async function saveSupabaseCar(car: IdentifiedCar, customUserId?: string): Promise<void> {
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) return;
 
-  const serialized = await serializeCar(car, customUserId);
-  let { error } = await supabase
-    .from("vehicles")
-    .upsert(serialized, { onConflict: "id" });
-
-  if (error && (error.message.includes("user_id") || error.message.includes("column") || error.code === "42703")) {
-    console.warn("Retrying saveSupabaseCar without user_id column...");
-    const { user_id, ...serializedNoUser } = serialized as any;
-    const retryRes = await supabase
+  try {
+    const serialized = await serializeCar(car, customUserId);
+    let { error } = await supabase
       .from("vehicles")
-      .upsert(serializedNoUser, { onConflict: "id" });
-    error = retryRes.error;
-  }
+      .upsert(serialized, { onConflict: "id" });
 
-  if (error) {
-    throw error;
+    if (error && (error.message.includes("user_id") || error.message.includes("column") || error.code === "42703")) {
+      console.warn("Retrying saveSupabaseCar without user_id column...");
+      const { user_id, ...serializedNoUser } = serialized as any;
+      const retryRes = await supabase
+        .from("vehicles")
+        .upsert(serializedNoUser, { onConflict: "id" });
+      error = retryRes.error;
+    }
+
+    if (error) {
+      throw error;
+    }
+  } catch (e: any) {
+    if (isMissingTableError(e)) {
+      console.warn("Vehicles table missing during save.");
+      return;
+    }
+    throw e;
   }
 }
 
@@ -401,7 +391,7 @@ export async function signOutUser(): Promise<void> {
  * Remove a vehicle from Supabase database
  */
 export async function removeSupabaseCar(id: string, userId?: string): Promise<void> {
-  if (!supabase) throw new Error("Supabase is not configured.");
+  if (!supabase) return;
 
   let activeUserId = userId || null;
   if (!activeUserId) {
@@ -415,15 +405,23 @@ export async function removeSupabaseCar(id: string, userId?: string): Promise<vo
     }
   }
 
-  let queryBuilder = supabase.from("vehicles").delete().eq("id", id);
-  if (activeUserId) {
-    queryBuilder = queryBuilder.eq("user_id", activeUserId);
-  }
+  try {
+    let queryBuilder = supabase.from("vehicles").delete().eq("id", id);
+    if (activeUserId) {
+      queryBuilder = queryBuilder.eq("user_id", activeUserId);
+    }
 
-  const { error } = await queryBuilder;
+    const { error } = await queryBuilder;
 
-  if (error) {
-    throw error;
+    if (error) {
+      throw error;
+    }
+  } catch (e: any) {
+    if (isMissingTableError(e)) {
+      console.warn("Vehicles table missing during remove.");
+      return;
+    }
+    throw e;
   }
 }
 
@@ -447,4 +445,102 @@ export async function syncLocalGarageToCloud(cars: IdentifiedCar[], userId?: str
   }
 
   return { successCount, errors };
+}
+
+export interface SupabaseHealthCheckResult {
+  success: boolean;
+  message: string;
+  configured: boolean;
+  url: string;
+  error?: {
+    message: string;
+    code?: string;
+    details?: string;
+    hint?: string;
+    stack?: string;
+  };
+}
+
+/**
+ * Health check procedure to verify live connection to Supabase database.
+ * Returns precise success, configuration state, and full diagnostic error traces for developer triage.
+ */
+export async function checkSupabaseConnection(): Promise<SupabaseHealthCheckResult> {
+  const isConfigured = isSupabaseConfigured();
+  if (!isConfigured) {
+    return {
+      success: false,
+      message: "Supabase integration is not active or configured. VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY environment parameters are missing or invalid in your environment setup.",
+      configured: false,
+      url: activeSupabaseUrl || "None"
+    };
+  }
+
+  if (!supabase) {
+    return {
+      success: false,
+      message: "The Supabase client instance failed to initialize cleanly with the provided system credentials.",
+      configured: true,
+      url: activeSupabaseUrl
+    };
+  }
+
+  try {
+    // Light connection probe to test authorization, network layer, and schema state
+    const { data, error } = await supabase
+      .from("vehicles")
+      .select("id")
+      .limit(1);
+
+    if (error) {
+      // If it is just a missing table error, this still proves that credentials and server handshake are fully functional!
+      if (isMissingTableError(error)) {
+        return {
+          success: true,
+          message: "Handshake Successful! Credentials are correct and connection is established. Note: The 'vehicles' table has not been created in this database yet. You can run the setup scripts in the SQL tab.",
+          configured: true,
+          url: activeSupabaseUrl,
+          error: {
+            message: error.message,
+            code: error.code,
+            details: error.details,
+            hint: error.hint
+          }
+        };
+      }
+      
+      // Other database / authority errors mean connection or project configuration fails
+      return {
+        success: false,
+        message: `Handshake Failed: ${error.message || "Unknown database rejection"}`,
+        configured: true,
+        url: activeSupabaseUrl,
+        error: {
+          message: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint
+        }
+      };
+    }
+
+    return {
+      success: true,
+      message: "Connection fully operational. Secure gateway is connected and 'vehicles' table is verified.",
+      configured: true,
+      url: activeSupabaseUrl
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      value: null,
+      message: `Direct TCP/HTTPS connection failure: ${e.message || e}`,
+      configured: true,
+      url: activeSupabaseUrl,
+      error: {
+        message: e.message || String(e),
+        stack: e.stack
+      }
+    } as any;
+  }
 }

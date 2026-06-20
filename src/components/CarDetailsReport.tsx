@@ -7,6 +7,18 @@ import {
   MessageSquare, Share2, Send, Copy, Check, Users
 } from "lucide-react";
 
+const dummyStorage: Storage = {
+  getItem: () => null,
+  setItem: () => {},
+  removeItem: () => {},
+  clear: () => {},
+  key: () => null,
+  get length() { return 0; }
+} as Storage;
+
+const localStorage = dummyStorage;
+const sessionStorage = dummyStorage;
+
 interface CarDetailsReportProps {
   car: IdentifiedCar;
   onSave?: () => void;

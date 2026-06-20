@@ -4,16 +4,124 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 import path from "path";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 dotenv.config();
 
 const app = express();
 
+const supabaseStorage = new AsyncLocalStorage<any>();
+const supabaseClientsCache = new Map<string, any>();
+
+function sanitizeSupabaseUrl(url: string): string {
+  let cleaned = (url || "").trim();
+  if (cleaned.endsWith("/")) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  if (cleaned.toLowerCase().endsWith("/rest/v1")) {
+    cleaned = cleaned.slice(0, -8);
+  }
+  if (cleaned.endsWith("/")) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  return cleaned;
+}
+
 // Increase request size limit for base64 image uploads
 app.use(express.json({ limit: "15mb" }));
 
+// Request-scoped Supabase configuration middleware to automatically adapt to dynamic client-side localStorage overrides
+app.use((req, res, next) => {
+  const urlHeader = req.headers["x-supabase-url"];
+  const keyHeader = req.headers["x-supabase-anon-key"];
+  
+  let targetClient = null;
+  
+  if (typeof urlHeader === "string" && urlHeader.trim() && typeof keyHeader === "string" && keyHeader.trim()) {
+    const rawUrl = urlHeader.trim();
+    const url = sanitizeSupabaseUrl(rawUrl);
+    const key = keyHeader.trim();
+    const cacheKey = `${url}:::${key}`;
+    if (!supabaseClientsCache.has(cacheKey)) {
+      try {
+        const client = createClient(url, key, {
+          auth: {
+            persistSession: false
+          }
+        });
+        supabaseClientsCache.set(cacheKey, client);
+      } catch (err) {
+        console.warn("Error creating client-overridden Supabase instance:", err);
+      }
+    }
+    targetClient = supabaseClientsCache.get(cacheKey) || null;
+  }
+  
+  if (!targetClient) {
+    try {
+      targetClient = getDefaultSupabaseClient();
+    } catch (err) {
+      // Allow passing through so we don't crash the server on boot if env vars are missing
+    }
+  }
+
+  if (targetClient) {
+    supabaseStorage.run(targetClient, () => {
+      next();
+    });
+  } else {
+    next();
+  }
+});
+
 let aiClient: GoogleGenAI | null = null;
 let activeSupabaseClient: any = null;
+
+const ERROR_LOGS_DIR = path.join(process.cwd(), "cache_db");
+if (!fs.existsSync(ERROR_LOGS_DIR)) {
+  fs.mkdirSync(ERROR_LOGS_DIR, { recursive: true });
+}
+
+interface DatabaseErrorLog {
+  timestamp: string;
+  context: string;
+  message: string;
+  code?: string;
+  stack?: string;
+  tableName?: string;
+  apiPath?: string;
+  apiMethod?: string;
+  apiQuery?: string;
+}
+
+function saveErrorTraceToFile(logEntry: DatabaseErrorLog) {
+  try {
+    const filePath = path.join(ERROR_LOGS_DIR, "database_errors.json");
+    let logs: DatabaseErrorLog[] = [];
+    if (fs.existsSync(filePath)) {
+      logs = JSON.parse(fs.readFileSync(filePath, "utf8")) || [];
+    }
+    logs.unshift(logEntry);
+    if (logs.length > 100) {
+      logs = logs.slice(0, 100);
+    }
+    fs.writeFileSync(filePath, JSON.stringify(logs, null, 2), "utf8");
+  } catch (err) {
+    console.warn("Failed to save error trace to file:", err);
+  }
+}
+
+function getErrorTracesFromFile(): DatabaseErrorLog[] {
+  try {
+    const filePath = path.join(ERROR_LOGS_DIR, "database_errors.json");
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, "utf8")) || [];
+    }
+  } catch (err) {
+    console.warn("Failed to read error traces from file:", err);
+  }
+  return [];
+}
 
 function checkIsMissingTable(err: any): boolean {
   if (!err) return false;
@@ -46,15 +154,15 @@ function getGeminiClient(): GoogleGenAI {
   return aiClient;
 }
 
-// Lazy initialization of Supabase client on backend with support for custom overrides
-function getSupabase() {
+function getDefaultSupabaseClient() {
   if (!activeSupabaseClient) {
-    const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
+    const rawUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
     const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
     
-    if (!url || !key) {
+    if (!rawUrl || !key) {
       throw new Error("Supabase credentials (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing. Please configure them in the Secrets panel or .env file.");
     }
+    const url = sanitizeSupabaseUrl(rawUrl);
     activeSupabaseClient = createClient(url, key, {
       auth: {
         persistSession: false
@@ -62,6 +170,15 @@ function getSupabase() {
     });
   }
   return activeSupabaseClient;
+}
+
+// Lazy initialization of Supabase client on backend with support for custom overrides
+function getSupabase() {
+  const store = supabaseStorage.getStore();
+  if (store) {
+    return store;
+  }
+  return getDefaultSupabaseClient();
 }
 
 // Helper methods to read/write Gemini analysis cache in Supabase
@@ -173,6 +290,9 @@ CREATE TABLE IF NOT EXISTS public.whipcheck_users (
   is_verified BOOLEAN DEFAULT false,
   otp TEXT,
   otp_expires BIGINT,
+  plan_tier TEXT DEFAULT 'chiptuning',
+  scans_count_used INTEGER DEFAULT 0,
+  compare_list TEXT DEFAULT '[]',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -196,10 +316,21 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   ON public.whipcheck_identify_cache FOR ALL USING (true) WITH CHECK (true);`;
 }
 
-function handleDatabaseError(err: any, res: any, contextDescription = "") {
-  console.warn(`Database Error [${contextDescription}]:`, err?.message || err);
+function handleDatabaseError(err: any, res: any, contextDescription = "", req?: any) {
+  console.log("Response received:", res.body);
+  console.error("Database connection failed:", err);
+
+  const reqMethod = req ? req.method : undefined;
+  const reqPath = req ? req.originalUrl || req.path : undefined;
+  const reqQuery = req && req.query && Object.keys(req.query).length > 0 ? JSON.stringify(req.query) : undefined;
+
+  console.warn(`Database Error [${contextDescription}]:`, err?.stack || err?.message || err);
+  if (reqMethod && reqPath) {
+    console.warn(`API Call: ${reqMethod} ${reqPath} | Query: ${reqQuery || "None"}`);
+  }
   
   const errText = err?.message || String(err || "");
+  const errStack = err?.stack || String(err || "");
   const isMissingTable = 
     err?.code === "42P01" || 
     err?.code === "PGRST125" ||
@@ -207,8 +338,14 @@ function handleDatabaseError(err: any, res: any, contextDescription = "") {
     errText.toLowerCase().includes("invalid path specified in request url") ||
     errText.toLowerCase().includes("pgrst125");
 
+  const isMissingColumn = 
+    err?.code === "42703" || 
+    err?.code === "PGRST204" ||
+    (errText.toLowerCase().includes("column") && errText.toLowerCase().includes("does not exist"));
+
+  let tableName: string | undefined = undefined;
   if (isMissingTable) {
-    let tableName = "requested database table";
+    tableName = "requested database table";
     const tableMatch = errText.match(/relation "public\.(.+?)"/i);
     if (tableMatch && tableMatch[1]) {
       tableName = tableMatch[1];
@@ -224,18 +361,63 @@ function handleDatabaseError(err: any, res: any, contextDescription = "") {
         tableName = "comments / vehicles / whipcheck_users";
       }
     }
-    
+  }
+
+  // Persistently record full trace
+  saveErrorTraceToFile({
+    timestamp: new Date().toISOString(),
+    context: contextDescription,
+    message: errText,
+    code: err?.code || (errText.includes("PGRST125") ? "PGRST125" : undefined),
+    stack: errStack,
+    tableName: tableName,
+    apiPath: reqPath,
+    apiMethod: reqMethod,
+    apiQuery: reqQuery
+  });
+
+  if (isMissingTable) {
     return res.status(400).json({
       error: `Database SQL Table Missing: The table "${tableName}" does not exist in your Supabase project.`,
       code: "TABLE_MISSING",
       tableName: tableName,
       message: `To resolve this error, please log in to your Supabase project dashboard, select the left "SQL Editor" panel, click "New Query," paste the complete SQL script shown below, and hit "Run" to establish the tables automatically.`,
-      requiredSql: getCompleteSqlSchema()
+      requiredSql: getCompleteSqlSchema(),
+      stack: errStack,
+      apiCallTrace: reqPath ? {
+        path: reqPath,
+        method: reqMethod,
+        query: req.query || null
+      } : undefined
+    });
+  }
+
+  if (isMissingColumn) {
+    return res.status(400).json({
+      error: `Database SQL Column Missing: One or more required columns are missing from the "whipcheck_users" table in your Supabase project.`,
+      code: "COLUMN_MISSING",
+      message: `Your backend was upgraded, but your Supabase table is missing user plan level / scan count / compare cache columns. To resolve this instantly, please navigate to your Supabase dashboard, open the "SQL Editor" panel, click "New Query", paste and run the query details below, then click save/try again.`,
+      requiredSql: `-- Execute this query to add the missing columns to public.whipcheck_users!
+ALTER TABLE public.whipcheck_users ADD COLUMN IF NOT EXISTS plan_tier TEXT DEFAULT 'chiptuning';
+ALTER TABLE public.whipcheck_users ADD COLUMN IF NOT EXISTS scans_count_used INTEGER DEFAULT 0;
+ALTER TABLE public.whipcheck_users ADD COLUMN IF NOT EXISTS compare_list TEXT DEFAULT '[]';`,
+      stack: errStack,
+      apiCallTrace: reqPath ? {
+        path: reqPath,
+        method: reqMethod,
+        query: req.query || null
+      } : undefined
     });
   }
 
   return res.status(500).json({
-    error: err?.message || err || `Failed during ${contextDescription || 'database operations'}.`
+    error: err?.message || err || `Failed during ${contextDescription || 'database operations'}.`,
+    stack: errStack,
+    apiCallTrace: reqPath ? {
+      path: reqPath,
+      method: reqMethod,
+      query: req.query || null
+    } : undefined
   });
 }
 
@@ -264,7 +446,7 @@ app.get("/api/comments/:carId", async (req, res) => {
     if (error) throw error;
     res.json({ comments: data || [] });
   } catch (err: any) {
-    handleDatabaseError(err, res, "fetch comments");
+    handleDatabaseError(err, res, "fetch comments", req);
   }
 });
 
@@ -297,16 +479,16 @@ app.post("/api/comments/:carId", async (req, res) => {
 
     if (insertErr) throw insertErr;
 
-    const { data: updatedList, error: fetchErr } = await supabaseObj
+    const { data, error: fetchErr } = await supabaseObj
       .from("comments")
       .select("*")
       .eq("car_id", carId);
 
     if (fetchErr) throw fetchErr;
 
-    res.json({ success: true, comments: updatedList || [], comment: newComment });
+    res.json({ success: true, comments: data || [], comment: newComment });
   } catch (err: any) {
-    handleDatabaseError(err, res, "save comment");
+    handleDatabaseError(err, res, "save comment", req);
   }
 });
 
@@ -322,16 +504,16 @@ app.delete("/api/comments/:carId/:commentId", async (req, res) => {
 
     if (deleteErr) throw deleteErr;
 
-    const { data: updatedList, error: fetchErr } = await supabaseObj
+    const { data, error: fetchErr } = await supabaseObj
       .from("comments")
       .select("*")
       .eq("car_id", carId);
 
     if (fetchErr) throw fetchErr;
 
-    res.json({ success: true, comments: updatedList || [] });
+    res.json({ success: true, comments: data || [] });
   } catch (err: any) {
-    handleDatabaseError(err, res, "delete comment");
+    handleDatabaseError(err, res, "delete comment", req);
   }
 });
 
@@ -345,13 +527,12 @@ app.delete("/api/comments/:carId", async (req, res) => {
     if (author) {
       query = query.eq("author", author as string);
     }
-
     const { error } = await query;
     if (error) throw error;
 
     res.json({ success: true, message: `Comments deleted for car: ${carId}` });
   } catch (err: any) {
-    handleDatabaseError(err, res, "delete comments list");
+    handleDatabaseError(err, res, "delete comments list", req);
   }
 });
 
@@ -379,9 +560,7 @@ app.post("/api/auth/signup", async (req, res) => {
       .select("id")
       .eq("email", emailKey);
 
-    if (emailErr) {
-      throw emailErr;
-    }
+    if (emailErr) throw emailErr;
 
     if (existingEmail && existingEmail.length > 0) {
       res.status(400).json({ error: "An account with this email address already exists. Please sign in instead." });
@@ -394,9 +573,7 @@ app.post("/api/auth/signup", async (req, res) => {
       .select("id")
       .ilike("username", userVal);
 
-    if (userCheckErr) {
-      throw userCheckErr;
-    }
+    if (userCheckErr) throw userCheckErr;
 
     if (existingUser && existingUser.length > 0) {
       res.status(400).json({ error: "This username is already taken. Please choose a different one." });
@@ -433,7 +610,7 @@ app.post("/api/auth/signup", async (req, res) => {
       message: "Account registered successfully! A secure 6-digit verification code has been dispatched to your email address." 
     });
   } catch (err: any) {
-    handleDatabaseError(err, res, "user registration");
+    handleDatabaseError(err, res, "user registration", req);
   }
 });
 
@@ -498,11 +675,14 @@ app.post("/api/auth/login", async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        email: user.email
+        email: user.email,
+        plan_tier: user.plan_tier || "chiptuning",
+        scans_count_used: typeof user.scans_count_used === "number" ? user.scans_count_used : 0,
+        compare_list: user.compare_list || "[]"
       }
     });
   } catch (err: any) {
-    handleDatabaseError(err, res, "login session");
+    handleDatabaseError(err, res, "login session", req);
   }
 });
 
@@ -519,13 +699,13 @@ app.post("/api/auth/verify-otp", async (req, res) => {
     const code = otp.trim();
 
     const supabaseObj = getSupabase();
-
     const { data: users, error: selectErr } = await supabaseObj
       .from("whipcheck_users")
       .select("*")
       .eq("email", query);
 
     if (selectErr) throw selectErr;
+
     const user = (users && users[0]) || null;
 
     if (!user) {
@@ -555,7 +735,10 @@ app.post("/api/auth/verify-otp", async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        email: user.email
+        email: user.email,
+        plan_tier: user.plan_tier || "chiptuning",
+        scans_count_used: typeof user.scans_count_used === "number" ? user.scans_count_used : 0,
+        compare_list: user.compare_list || "[]"
       }
     });
   } catch (err: any) {
@@ -574,13 +757,13 @@ app.post("/api/auth/resend-otp", async (req, res) => {
 
     const query = email.trim().toLowerCase();
     const supabaseObj = getSupabase();
-
     const { data: users, error: selectErr } = await supabaseObj
       .from("whipcheck_users")
       .select("*")
       .eq("email", query);
 
     if (selectErr) throw selectErr;
+
     const user = (users && users[0]) || null;
 
     if (!user) {
@@ -589,7 +772,6 @@ app.post("/api/auth/resend-otp", async (req, res) => {
     }
 
     const generatedOtp = String(Math.floor(100000 + Math.random() * 900000));
-    
     const { error: updateErr } = await supabaseObj
       .from("whipcheck_users")
       .update({ otp: generatedOtp, otp_expires: Date.now() + 15 * 60 * 1000 })
@@ -613,20 +795,115 @@ app.post("/api/auth/resend-otp", async (req, res) => {
   }
 });
 
+// Fetch user subscription & plan detailed parameters
+app.get("/api/user/profile/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || userId === "null" || userId === "undefined") {
+      res.status(401).json({ error: "Unauthorized: Invalid or empty user identifier. Please log in first." });
+      return;
+    }
+    const supabaseObj = getSupabase();
+    const { data: users, error } = await supabaseObj
+      .from("whipcheck_users")
+      .select("id, username, email, plan_tier, scans_count_used, compare_list")
+      .eq("id", userId);
+
+    if (error) throw error;
+
+    const user = (users && users[0]) || null;
+    if (!user) {
+      res.status(404).json({ error: "User profile not found." });
+      return;
+    }
+
+    res.json({
+      success: true,
+      profile: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        plan_tier: user.plan_tier || "chiptuning",
+        scans_count_used: typeof user.scans_count_used === "number" ? user.scans_count_used : 0,
+        compare_list: user.compare_list || "[]"
+      }
+    });
+  } catch (err: any) {
+    handleDatabaseError(err, res, "fetch user profile", req);
+  }
+});
+
+// Update user subscription, plan parameters, or comparisons
+app.post("/api/user/profile/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || userId === "null" || userId === "undefined") {
+      res.status(401).json({ error: "Unauthorized: Invalid or empty user identifier." });
+      return;
+    }
+    const { plan_tier, scans_count_used, compare_list } = req.body;
+    const updateObj: any = {};
+
+    if (plan_tier !== undefined) {
+      updateObj.plan_tier = plan_tier;
+    }
+    if (scans_count_used !== undefined) {
+      updateObj.scans_count_used = Number(scans_count_used);
+    }
+    if (compare_list !== undefined) {
+      updateObj.compare_list = typeof compare_list === "string" ? compare_list : JSON.stringify(compare_list);
+    }
+
+    if (Object.keys(updateObj).length === 0) {
+      res.status(400).json({ error: "Nothing to update." });
+      return;
+    }
+
+    const supabaseObj = getSupabase();
+    const { data, error } = await supabaseObj
+      .from("whipcheck_users")
+      .update(updateObj)
+      .eq("id", userId)
+      .select("id, username, email, plan_tier, scans_count_used, compare_list");
+
+    if (error) throw error;
+
+    const updatedUser = (data && data[0]) || null;
+    res.json({
+      success: true,
+      profile: updatedUser ? {
+        id: updatedUser.id,
+        username: updatedUser.username,
+        email: updatedUser.email,
+        plan_tier: updatedUser.plan_tier || "chiptuning",
+        scans_count_used: typeof updatedUser.scans_count_used === "number" ? updatedUser.scans_count_used : 0,
+        compare_list: updatedUser.compare_list || "[]"
+      } : null
+    });
+  } catch (err: any) {
+    handleDatabaseError(err, res, "update user profile", req);
+  }
+});
+
 // Fetch server vehicles scoped to custom user ID
 app.get("/api/user/vehicles/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    if (!userId || userId === "null" || userId === "undefined") {
+      res.status(401).json({ error: "Unauthorized: Invalid or unauthenticated session. Please log in first." });
+      return;
+    }
     const supabaseObj = getSupabase();
-    const { data, error } = await supabaseObj
+
+    const { data: dbData, error } = await supabaseObj
       .from("vehicles")
       .select("*")
       .eq("user_id", userId);
 
     if (error) throw error;
-    const dbData = data || [];
+    const refreshedData = dbData || [];
 
-    const vehicles = dbData.map(row => {
+    const vehicles = refreshedData.map(row => {
       let triviaParsed = [];
       let tipsParsed = [];
       let specsParsed = { transmission: "N/A", driveType: "N/A", fuelEconomy: "N/A" };
@@ -655,7 +932,7 @@ app.get("/api/user/vehicles/:userId", async (req, res) => {
 
     res.json({ vehicles });
   } catch (err: any) {
-    handleDatabaseError(err, res, "retrieve user garage");
+    handleDatabaseError(err, res, "retrieve user garage", req);
   }
 });
 
@@ -663,6 +940,10 @@ app.get("/api/user/vehicles/:userId", async (req, res) => {
 app.post("/api/user/vehicles/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    if (!userId || userId === "null" || userId === "undefined") {
+      res.status(401).json({ error: "Unauthorized: Invalid, unauthenticated, or empty user identifier. Please log in first." });
+      return;
+    }
     const { vehicle } = req.body;
     if (!vehicle) {
       res.status(400).json({ error: "Missing vehicle spec." });
@@ -753,7 +1034,7 @@ app.post("/api/user/vehicles/:userId", async (req, res) => {
 
     res.json({ success: true, vehicles });
   } catch (err: any) {
-    handleDatabaseError(err, res, "persist user garage");
+    handleDatabaseError(err, res, "persist user garage", req);
   }
 });
 
@@ -761,7 +1042,12 @@ app.post("/api/user/vehicles/:userId", async (req, res) => {
 app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
   try {
     const { userId, vehicleId } = req.params;
+    if (!userId || userId === "null" || userId === "undefined") {
+      res.status(401).json({ error: "Unauthorized: Invalid or unauthenticated session. Please log in first." });
+      return;
+    }
     const supabaseObj = getSupabase();
+
     const { error: valErr } = await supabaseObj
       .from("vehicles")
       .delete()
@@ -770,13 +1056,13 @@ app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
 
     if (valErr) throw valErr;
 
-    const { data, error: selectErr } = await supabaseObj
+    const { data: dbData, error: selectErr } = await supabaseObj
       .from("vehicles")
       .select("*")
       .eq("user_id", userId);
 
     if (selectErr) throw selectErr;
-    const refreshedData = data || [];
+    const refreshedData = dbData || [];
 
     const vehicles = refreshedData.map(row => {
       let triviaParsed = [];
@@ -807,7 +1093,7 @@ app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
 
     res.json({ success: true, vehicles });
   } catch (err: any) {
-    handleDatabaseError(err, res, "remove user car");
+    handleDatabaseError(err, res, "remove user car", req);
   }
 });
 
@@ -1264,17 +1550,62 @@ app.post("/api/admin/wipe-users", async (req, res) => {
 app.get("/api/admin/database-stats", async (req, res) => {
   try {
     const supabaseObj = getSupabase();
-    const { data: dbUsers, error: uErr } = await supabaseObj.from("whipcheck_users").select("*");
-    if (uErr) throw uErr;
-    const users = dbUsers || [];
+    let users: any[] = [];
+    let vehicles: any[] = [];
+    let comments: any[] = [];
+    
+    let statsErrors: string[] = [];
 
-    const { data: dbVehicles, error: vErr } = await supabaseObj.from("vehicles").select("*");
-    if (vErr) throw vErr;
-    const vehicles = dbVehicles || [];
+    try {
+      const { data: dbUsers, error: uErr } = await supabaseObj.from("whipcheck_users").select("*");
+      if (uErr) throw uErr;
+      users = dbUsers || [];
+    } catch (err: any) {
+      console.warn("Failed retrieving whipcheck_users stats:", err);
+      statsErrors.push(`whipcheck_users: ${err?.message || err}`);
+      // Log trace persistently
+      saveErrorTraceToFile({
+        timestamp: new Date().toISOString(),
+        context: "retrieve users stats",
+        message: err?.message || String(err),
+        code: err?.code,
+        stack: err?.stack || String(err)
+      });
+    }
 
-    const { data: dbComments, error: cErr } = await supabaseObj.from("comments").select("*");
-    if (cErr) throw cErr;
-    const comments = dbComments || [];
+    try {
+      const { data: dbVehicles, error: vErr } = await supabaseObj.from("vehicles").select("*");
+      if (vErr) throw vErr;
+      vehicles = dbVehicles || [];
+    } catch (err: any) {
+      console.warn("Failed retrieving vehicles stats:", err);
+      statsErrors.push(`vehicles: ${err?.message || err}`);
+      // Log trace persistently
+      saveErrorTraceToFile({
+        timestamp: new Date().toISOString(),
+        context: "retrieve vehicles stats",
+        message: err?.message || String(err),
+        code: err?.code,
+        stack: err?.stack || String(err)
+      });
+    }
+
+    try {
+      const { data: dbComments, error: cErr } = await supabaseObj.from("comments").select("*");
+      if (cErr) throw cErr;
+      comments = dbComments || [];
+    } catch (err: any) {
+      console.warn("Failed retrieving comments stats:", err);
+      statsErrors.push(`comments: ${err?.message || err}`);
+      // Log trace persistently
+      saveErrorTraceToFile({
+        timestamp: new Date().toISOString(),
+        context: "retrieve comments stats",
+        message: err?.message || String(err),
+        code: err?.code,
+        stack: err?.stack || String(err)
+      });
+    }
 
     const rawVehiclesGrouped: Record<string, any[]> = {};
     (vehicles || []).forEach(v => {
@@ -1304,10 +1635,83 @@ app.get("/api/admin/database-stats", async (req, res) => {
       ),
       rawUsers: users.map(u => ({ id: u.id, username: u.username, email: u.email, isVerified: u.is_verified })),
       rawVehicles: rawVehiclesGrouped,
-      rawComments: rawCommentsGrouped
+      rawComments: rawCommentsGrouped,
+      errorLogs: getErrorTracesFromFile(),
+      statsErrors: statsErrors.length > 0 ? statsErrors : undefined
     });
   } catch (err: any) {
     handleDatabaseError(err, res, "retrieve database statistics");
+  }
+});
+
+// Generic Live DB Explorer endpoint to browse rows of any table from Supabase host
+app.get("/api/admin/db-explorer/:tableName", async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const supabaseObj = getSupabase();
+    
+    // Safety check of tableName to prevent injections or weird behavior
+    const allowedTables = ["whipcheck_users", "vehicles", "comments", "whipcheck_identify_cache"];
+    if (!allowedTables.includes(tableName)) {
+      return res.status(400).json({ error: `Table "${tableName}" is not allowed or unrecognized.` });
+    }
+
+    const { data, error } = await supabaseObj.from(tableName).select("*");
+    if (error) throw error;
+
+    res.json({ success: true, tableName, rows: data || [] });
+  } catch (err: any) {
+    handleDatabaseError(err, res, `browse live table ${req.params.tableName}`);
+  }
+});
+
+// Delete a row from any table
+app.post("/api/admin/db-explorer/:tableName/delete", async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const { id, key } = req.body; // Use id or key depending on the table schema
+    const supabaseObj = getSupabase();
+
+    const allowedTables = ["whipcheck_users", "vehicles", "comments", "whipcheck_identify_cache"];
+    if (!allowedTables.includes(tableName)) {
+      return res.status(400).json({ error: `Table "${tableName}" is not allowed.` });
+    }
+
+    let query;
+    if (tableName === "whipcheck_identify_cache") {
+      query = supabaseObj.from(tableName).delete().eq("key", key);
+    } else {
+      query = supabaseObj.from(tableName).delete().eq("id", id);
+    }
+
+    const { error } = await query;
+    if (error) throw error;
+
+    res.json({ success: true, message: `Successfully deleted row from ${tableName}` });
+  } catch (err: any) {
+    handleDatabaseError(err, res, `delete row from live table ${req.params.tableName}`);
+  }
+});
+
+// Update/Upsert a row in any table
+app.post("/api/admin/db-explorer/:tableName/update", async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const rowData = req.body;
+    const supabaseObj = getSupabase();
+
+    const allowedTables = ["whipcheck_users", "vehicles", "comments", "whipcheck_identify_cache"];
+    if (!allowedTables.includes(tableName)) {
+      return res.status(400).json({ error: `Table "${tableName}" is not allowed.` });
+    }
+
+    const onConf = tableName === "whipcheck_identify_cache" ? "key" : "id";
+    const { error } = await supabaseObj.from(tableName).upsert(rowData, { onConflict: onConf });
+    if (error) throw error;
+
+    res.json({ success: true, message: `Successfully updated row in ${tableName}` });
+  } catch (err: any) {
+    handleDatabaseError(err, res, `update row in live table ${req.params.tableName}`);
   }
 });
 

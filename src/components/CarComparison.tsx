@@ -6,6 +6,18 @@ import {
   Share2, MessageSquare, Copy, Trash2
 } from "lucide-react";
 
+const dummyStorage: Storage = {
+  getItem: () => null,
+  setItem: () => {},
+  removeItem: () => {},
+  clear: () => {},
+  key: () => null,
+  get length() { return 0; }
+} as Storage;
+
+const localStorage = dummyStorage;
+const sessionStorage = dummyStorage;
+
 interface CarComparisonProps {
   cars: IdentifiedCar[];
   onClose: () => void;
