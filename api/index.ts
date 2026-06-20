@@ -2,6 +2,8 @@ import express from "express";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -12,6 +14,18 @@ app.use(express.json({ limit: "15mb" }));
 
 let aiClient: GoogleGenAI | null = null;
 let activeSupabaseClient: any = null;
+
+function checkIsMissingTable(err: any): boolean {
+  if (!err) return false;
+  const errText = err.message || String(err);
+  return (
+    err.code === "42P01" || 
+    err.code === "PGRST125" ||
+    (errText.toLowerCase().includes("relation") && errText.toLowerCase().includes("does not exist")) ||
+    errText.toLowerCase().includes("invalid path specified in request url") ||
+    errText.toLowerCase().includes("pgrst125")
+  );
+}
 
 // Lazy initialization of GoogleGenAI client to avoid crash if API key is not configured yet
 function getGeminiClient(): GoogleGenAI {
@@ -60,11 +74,11 @@ async function getCachedAnalysis(cacheKey: string): Promise<any | null> {
       .eq("key", cacheKey)
       .maybeSingle();
       
-    if (error) return null;
+    if (error) throw error;
     if (data && data.data) {
       return typeof data.data === "string" ? JSON.parse(data.data) : data.data;
     }
-  } catch (e) {
+  } catch (e: any) {
     console.warn("Cached analysis lookup failed:", e);
   }
   return null;
@@ -73,10 +87,11 @@ async function getCachedAnalysis(cacheKey: string): Promise<any | null> {
 async function saveCachedAnalysis(cacheKey: string, payload: any): Promise<void> {
   try {
     const supabaseObj = getSupabase();
-    await supabaseObj
+    const { error } = await supabaseObj
       .from("whipcheck_identify_cache")
       .upsert({ key: cacheKey, data: JSON.stringify(payload) });
-  } catch (e) {
+    if (error) throw error;
+  } catch (e: any) {
     console.warn("Failed to write to vision cache table:", e);
   }
 }
@@ -86,6 +101,142 @@ function isConnectionConfigured(): boolean {
   const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
   const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
   return !!(url.trim() && key.trim());
+}
+
+// Global database error handler that intercepts missing table structures
+function getCompleteSqlSchema(): string {
+  return `-- ========================================================
+-- WHIPCHECK COMPLETE SUPABASE SETUP SCRIPT
+-- ========================================================
+-- Execute this script in your Supabase SQL Editor to build all tables!
+
+-- 1. Create WhipCheck saved vehicles table
+CREATE TABLE IF NOT EXISTS public.vehicles (
+  id TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL,
+  image TEXT,
+  "isCar" BOOLEAN DEFAULT true,
+  make TEXT NOT NULL,
+  model TEXT NOT NULL,
+  generation TEXT,
+  "yearRange" TEXT,
+  confidence DOUBLE PRECISION,
+  color TEXT,
+  category TEXT,
+  "engineType" TEXT,
+  power TEXT,
+  horsepower TEXT,
+  torque TEXT,
+  "modelYear" TEXT,
+  "zeroToSixty" TEXT,
+  "estimatedNewPrice" TEXT,
+  "estimatedUsedPrice" TEXT,
+  trivia TEXT, -- JSON array of trivia
+  tips TEXT, -- JSON array of buyer/fan advice
+  specs TEXT, -- JSON object of specs (transmission, driveType, fuelEconomy)
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for vehicles
+ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to vehicles"
+  ON public.vehicles FOR ALL USING (true) WITH CHECK (true);
+
+-- 2. Create comments & rating review list
+CREATE TABLE IF NOT EXISTS public.comments (
+  id TEXT PRIMARY KEY,
+  car_id TEXT NOT NULL,
+  author TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  comfort INTEGER,
+  "gasConsumption" INTEGER,
+  performance INTEGER,
+  reliability INTEGER,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for comments
+ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to comments"
+  ON public.comments FOR ALL USING (true) WITH CHECK (true);
+
+-- 3. Create WhipCheck registered users table
+CREATE TABLE IF NOT EXISTS public.whipcheck_users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  is_verified BOOLEAN DEFAULT false,
+  otp TEXT,
+  otp_expires BIGINT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for whipcheck_users
+ALTER TABLE public.whipcheck_users ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to whipcheck_users"
+  ON public.whipcheck_users FOR ALL USING (true) WITH CHECK (true);
+
+-- 4. Create image-recognition caching lookup engine
+CREATE TABLE IF NOT EXISTS public.whipcheck_identify_cache (
+  key TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for whipcheck_identify_cache
+ALTER TABLE public.whipcheck_identify_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to whipcheck_identify_cache"
+  ON public.whipcheck_identify_cache FOR ALL USING (true) WITH CHECK (true);`;
+}
+
+function handleDatabaseError(err: any, res: any, contextDescription = "") {
+  console.warn(`Database Error [${contextDescription}]:`, err?.message || err);
+  
+  const errText = err?.message || String(err || "");
+  const isMissingTable = 
+    err?.code === "42P01" || 
+    err?.code === "PGRST125" ||
+    (errText.toLowerCase().includes("relation") && errText.toLowerCase().includes("does not exist")) ||
+    errText.toLowerCase().includes("invalid path specified in request url") ||
+    errText.toLowerCase().includes("pgrst125");
+
+  if (isMissingTable) {
+    let tableName = "requested database table";
+    const tableMatch = errText.match(/relation "public\.(.+?)"/i);
+    if (tableMatch && tableMatch[1]) {
+      tableName = tableMatch[1];
+    } else if (contextDescription) {
+      const desc = contextDescription.toLowerCase();
+      if (desc.includes("comment")) {
+        tableName = "comments";
+      } else if (desc.includes("garage") || desc.includes("vehicle") || desc.includes("car")) {
+        tableName = "vehicles";
+      } else if (desc.includes("user") || desc.includes("signup") || desc.includes("register") || desc.includes("login") || desc.includes("verification") || desc.includes("otp")) {
+        tableName = "whipcheck_users";
+      } else if (desc.includes("dashboard") || desc.includes("stats")) {
+        tableName = "comments / vehicles / whipcheck_users";
+      }
+    }
+    
+    return res.status(400).json({
+      error: `Database SQL Table Missing: The table "${tableName}" does not exist in your Supabase project.`,
+      code: "TABLE_MISSING",
+      tableName: tableName,
+      message: `To resolve this error, please log in to your Supabase project dashboard, select the left "SQL Editor" panel, click "New Query," paste the complete SQL script shown below, and hit "Run" to establish the tables automatically.`,
+      requiredSql: getCompleteSqlSchema()
+    });
+  }
+
+  return res.status(500).json({
+    error: err?.message || err || `Failed during ${contextDescription || 'database operations'}.`
+  });
 }
 
 // ----------------------------------------------------
@@ -102,8 +253,8 @@ app.get("/api/health", (req, res) => {
 
 // GET all comments for any specific Car ID or Comparison Key
 app.get("/api/comments/:carId", async (req, res) => {
+  const { carId } = req.params;
   try {
-    const { carId } = req.params;
     const supabaseObj = getSupabase();
     const { data, error } = await supabaseObj
       .from("comments")
@@ -113,7 +264,7 @@ app.get("/api/comments/:carId", async (req, res) => {
     if (error) throw error;
     res.json({ comments: data || [] });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to fetch comments" });
+    handleDatabaseError(err, res, "fetch comments");
   }
 });
 
@@ -127,7 +278,6 @@ app.post("/api/comments/:carId", async (req, res) => {
       return;
     }
 
-    const supabaseObj = getSupabase();
     const newComment = {
       id: `comment-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       car_id: carId,
@@ -140,6 +290,7 @@ app.post("/api/comments/:carId", async (req, res) => {
       reliability: typeof reliability === 'number' ? reliability : null
     };
 
+    const supabaseObj = getSupabase();
     const { error: insertErr } = await supabaseObj
       .from("comments")
       .insert(newComment);
@@ -155,7 +306,7 @@ app.post("/api/comments/:carId", async (req, res) => {
 
     res.json({ success: true, comments: updatedList || [], comment: newComment });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to save comment" });
+    handleDatabaseError(err, res, "save comment");
   }
 });
 
@@ -180,7 +331,7 @@ app.delete("/api/comments/:carId/:commentId", async (req, res) => {
 
     res.json({ success: true, comments: updatedList || [] });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to delete comment" });
+    handleDatabaseError(err, res, "delete comment");
   }
 });
 
@@ -190,7 +341,6 @@ app.delete("/api/comments/:carId", async (req, res) => {
     const { carId } = req.params;
     const { author } = req.query;
     const supabaseObj = getSupabase();
-    
     let query = supabaseObj.from("comments").delete().eq("car_id", carId);
     if (author) {
       query = query.eq("author", author as string);
@@ -201,7 +351,7 @@ app.delete("/api/comments/:carId", async (req, res) => {
 
     res.json({ success: true, message: `Comments deleted for car: ${carId}` });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to delete comments" });
+    handleDatabaseError(err, res, "delete comments list");
   }
 });
 
@@ -218,9 +368,10 @@ app.post("/api/auth/signup", async (req, res) => {
       return;
     }
 
-    const supabaseObj = getSupabase();
     const emailKey = email.trim().toLowerCase();
     const userVal = username.trim();
+
+    const supabaseObj = getSupabase();
 
     // Check email uniqueness
     const { data: existingEmail, error: emailErr } = await supabaseObj
@@ -229,7 +380,7 @@ app.post("/api/auth/signup", async (req, res) => {
       .eq("email", emailKey);
 
     if (emailErr) {
-      console.warn("Table whipcheck_users might be missing. Proceeding anyway...", emailErr);
+      throw emailErr;
     }
 
     if (existingEmail && existingEmail.length > 0) {
@@ -238,10 +389,14 @@ app.post("/api/auth/signup", async (req, res) => {
     }
 
     // Check username uniqueness
-    const { data: existingUser } = await supabaseObj
+    const { data: existingUser, error: userCheckErr } = await supabaseObj
       .from("whipcheck_users")
       .select("id")
       .ilike("username", userVal);
+
+    if (userCheckErr) {
+      throw userCheckErr;
+    }
 
     if (existingUser && existingUser.length > 0) {
       res.status(400).json({ error: "This username is already taken. Please choose a different one." });
@@ -278,7 +433,7 @@ app.post("/api/auth/signup", async (req, res) => {
       message: "Account registered successfully! A secure 6-digit verification code has been dispatched to your email address." 
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to handle user registration" });
+    handleDatabaseError(err, res, "user registration");
   }
 });
 
@@ -291,9 +446,10 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
 
-    const supabaseObj = getSupabase();
     const query = loginId.trim().toLowerCase();
     const pass = password.trim();
+
+    const supabaseObj = getSupabase();
 
     // Find user by email or username
     const { data: users, error: selectErr } = await supabaseObj
@@ -346,7 +502,7 @@ app.post("/api/auth/login", async (req, res) => {
       }
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to handle login session" });
+    handleDatabaseError(err, res, "login session");
   }
 });
 
@@ -359,9 +515,10 @@ app.post("/api/auth/verify-otp", async (req, res) => {
       return;
     }
 
-    const supabaseObj = getSupabase();
     const query = email.trim().toLowerCase();
     const code = otp.trim();
+
+    const supabaseObj = getSupabase();
 
     const { data: users, error: selectErr } = await supabaseObj
       .from("whipcheck_users")
@@ -386,7 +543,6 @@ app.post("/api/auth/verify-otp", async (req, res) => {
       return;
     }
 
-    // Mark as verified
     const { error: updateErr } = await supabaseObj
       .from("whipcheck_users")
       .update({ is_verified: true, otp: null, otp_expires: null })
@@ -403,7 +559,7 @@ app.post("/api/auth/verify-otp", async (req, res) => {
       }
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to verify OTP code" });
+    handleDatabaseError(err, res, "verify OTP security PIN");
   }
 });
 
@@ -416,8 +572,8 @@ app.post("/api/auth/resend-otp", async (req, res) => {
       return;
     }
 
-    const supabaseObj = getSupabase();
     const query = email.trim().toLowerCase();
+    const supabaseObj = getSupabase();
 
     const { data: users, error: selectErr } = await supabaseObj
       .from("whipcheck_users")
@@ -453,7 +609,7 @@ app.post("/api/auth/resend-otp", async (req, res) => {
       message: "A fresh 6-digit verification code has been dispatched to your email address."
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to generate OTP" });
+    handleDatabaseError(err, res, "resend verification security PIN");
   }
 });
 
@@ -468,8 +624,9 @@ app.get("/api/user/vehicles/:userId", async (req, res) => {
       .eq("user_id", userId);
 
     if (error) throw error;
+    const dbData = data || [];
 
-    const vehicles = (data || []).map(row => {
+    const vehicles = dbData.map(row => {
       let triviaParsed = [];
       let tipsParsed = [];
       let specsParsed = { transmission: "N/A", driveType: "N/A", fuelEconomy: "N/A" };
@@ -498,7 +655,7 @@ app.get("/api/user/vehicles/:userId", async (req, res) => {
 
     res.json({ vehicles });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to retrieve user garage" });
+    handleDatabaseError(err, res, "retrieve user garage");
   }
 });
 
@@ -513,14 +670,14 @@ app.post("/api/user/vehicles/:userId", async (req, res) => {
     }
 
     const supabaseObj = getSupabase();
-    
-    // Check if car already exists
     const { data: existingCar, error: checkErr } = await supabaseObj
       .from("vehicles")
       .select("id")
       .eq("user_id", userId)
       .eq("id", vehicle.id)
       .maybeSingle();
+
+    if (checkErr) throw checkErr;
 
     if (existingCar) {
       res.status(400).json({ error: "Car already added before" });
@@ -559,15 +716,15 @@ app.post("/api/user/vehicles/:userId", async (req, res) => {
 
     if (insertErr) throw insertErr;
 
-    // Fetch refreshed garage
-    const { data, error: selectErr } = await supabaseObj
+    const { data: dbData, error: selectErr } = await supabaseObj
       .from("vehicles")
       .select("*")
       .eq("user_id", userId);
 
     if (selectErr) throw selectErr;
+    const refreshedData = dbData || [];
 
-    const vehicles = (data || []).map(row => {
+    const vehicles = refreshedData.map(row => {
       let triviaParsed = [];
       let tipsParsed = [];
       let specsParsed = { transmission: "N/A", driveType: "N/A", fuelEconomy: "N/A" };
@@ -596,7 +753,7 @@ app.post("/api/user/vehicles/:userId", async (req, res) => {
 
     res.json({ success: true, vehicles });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to persist user garage." });
+    handleDatabaseError(err, res, "persist user garage");
   }
 });
 
@@ -605,7 +762,6 @@ app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
   try {
     const { userId, vehicleId } = req.params;
     const supabaseObj = getSupabase();
-
     const { error: valErr } = await supabaseObj
       .from("vehicles")
       .delete()
@@ -614,15 +770,15 @@ app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
 
     if (valErr) throw valErr;
 
-    // Refreshed garage
     const { data, error: selectErr } = await supabaseObj
       .from("vehicles")
       .select("*")
       .eq("user_id", userId);
 
     if (selectErr) throw selectErr;
+    const refreshedData = data || [];
 
-    const vehicles = (data || []).map(row => {
+    const vehicles = refreshedData.map(row => {
       let triviaParsed = [];
       let tipsParsed = [];
       let specsParsed = { transmission: "N/A", driveType: "N/A", fuelEconomy: "N/A" };
@@ -651,7 +807,7 @@ app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
 
     res.json({ success: true, vehicles });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to remove user car" });
+    handleDatabaseError(err, res, "remove user car");
   }
 });
 
@@ -806,27 +962,56 @@ If the image does not seem to contain or represent an automobile, please set "is
 // GET dashboard landing page global statistics and top rated vehicle computation
 app.get("/api/dashboard-stats", async (req, res) => {
   try {
+    let comments: any[] = [];
+    let vehicles: any[] = [];
+    let requiresSetup = false;
+    let missingTable = "";
     const supabaseObj = getSupabase();
 
-    // Fetch all comments and vehicles
-    const { data: comments, error: cErr } = await supabaseObj
-      .from("comments")
-      .select("*");
-    if (cErr) throw cErr;
+    try {
+      const { data: commentsData, error: cErr } = await supabaseObj
+        .from("comments")
+        .select("*");
+      if (cErr) throw cErr;
+      comments = commentsData || [];
+    } catch (err: any) {
+      if (checkIsMissingTable(err)) {
+        requiresSetup = true;
+        missingTable = "comments";
+      } else {
+        throw err;
+      }
+    }
 
-    const { data: vehicles, error: vErr } = await supabaseObj
-      .from("vehicles")
-      .select("*");
-    if (vErr) throw vErr;
+    try {
+      const { data: vehiclesData, error: vErr } = await supabaseObj
+        .from("vehicles")
+        .select("*");
+      if (vErr) throw vErr;
+      vehicles = vehiclesData || [];
+    } catch (err: any) {
+      if (checkIsMissingTable(err)) {
+        requiresSetup = true;
+        missingTable = "vehicles";
+      } else {
+        throw err;
+      }
+    }
 
     let usersCount = 0;
     try {
-      const { data: usersData } = await supabaseObj
+      const { data: usersData, error: uErr } = await supabaseObj
         .from("whipcheck_users")
         .select("id");
+      if (uErr) throw uErr;
       usersCount = (usersData || []).length;
-    } catch (e) {
-      console.warn("Whipcheck_users table missing or empty", e);
+    } catch (e: any) {
+      if (checkIsMissingTable(e)) {
+        requiresSetup = true;
+        missingTable = "whipcheck_users";
+      } else {
+        console.warn("Whipcheck_users table missing or empty", e);
+      }
     }
 
     const allVehicles: any[] = (vehicles || []).map(row => {
@@ -1019,17 +1204,21 @@ app.get("/api/dashboard-stats", async (req, res) => {
       userCommentsCount,
       topRatedCar: topRatedCarDetails ? {
         ...topRatedCarDetails,
-        averageRating: maxAvgRating || 4.8,
+         averageRating: maxAvgRating || 4.8,
         ratingCount: topVehicleId ? (commentsMap[topVehicleId]?.length || 1) : 12,
         comfortAvg: comfortAvg || 4.7,
         gasAvg: gasAvg || 4.2,
         performanceAvg: performanceAvg || 4.9,
         reliabilityAvg: reliabilityAvg || 4.8
       } : null,
-      vehicleRatings
+      vehicleRatings,
+      requiresSetup: requiresSetup || false,
+      requiredSql: requiresSetup ? getCompleteSqlSchema() : undefined,
+      tableName: requiresSetup ? missingTable : undefined,
+      message: requiresSetup ? "One of the required Supabase database tables is missing. Please run the setup SQL script in your Supabase project to generate them." : undefined
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to retrieve dashboard stats" });
+    handleDatabaseError(err, res, "retrieve dashboard stats");
   }
 });
 
@@ -1037,7 +1226,6 @@ app.get("/api/dashboard-stats", async (req, res) => {
 app.post("/api/admin/reset-database", async (req, res) => {
   try {
     const supabaseObj = getSupabase();
-
     await supabaseObj.from("comments").delete().neq("id", "0");
     await supabaseObj.from("vehicles").delete().neq("id", "0");
     
@@ -1055,7 +1243,7 @@ app.post("/api/admin/reset-database", async (req, res) => {
 
     res.json({ success: true, message: "All cloud database rows on Supabase have been successfully reset and initialized!" });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to clear databases." });
+    handleDatabaseError(err, res, "clear databases");
   }
 });
 
@@ -1065,9 +1253,10 @@ app.post("/api/admin/wipe-users", async (req, res) => {
     const supabaseObj = getSupabase();
     const { error } = await supabaseObj.from("whipcheck_users").delete().neq("id", "0");
     if (error) throw error;
+
     res.json({ success: true, message: "All users registered in the database have been successfully cleared!" });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to clear registered users." });
+    handleDatabaseError(err, res, "clear registered users");
   }
 });
 
@@ -1075,10 +1264,17 @@ app.post("/api/admin/wipe-users", async (req, res) => {
 app.get("/api/admin/database-stats", async (req, res) => {
   try {
     const supabaseObj = getSupabase();
+    const { data: dbUsers, error: uErr } = await supabaseObj.from("whipcheck_users").select("*");
+    if (uErr) throw uErr;
+    const users = dbUsers || [];
 
-    const { data: users } = await supabaseObj.from("whipcheck_users").select("*");
-    const { data: vehicles } = await supabaseObj.from("vehicles").select("*");
-    const { data: comments } = await supabaseObj.from("comments").select("*");
+    const { data: dbVehicles, error: vErr } = await supabaseObj.from("vehicles").select("*");
+    if (vErr) throw vErr;
+    const vehicles = dbVehicles || [];
+
+    const { data: dbComments, error: cErr } = await supabaseObj.from("comments").select("*");
+    if (cErr) throw cErr;
+    const comments = dbComments || [];
 
     const rawVehiclesGrouped: Record<string, any[]> = {};
     (vehicles || []).forEach(v => {
@@ -1099,19 +1295,19 @@ app.get("/api/admin/database-stats", async (req, res) => {
     });
 
     res.json({
-      usersCount: (users || []).length,
+      usersCount: users.length,
       vehiclesUserCount: Object.keys(rawVehiclesGrouped).length,
-      totalVehiclesCount: (vehicles || []).length,
-      totalCommentsCount: (comments || []).length,
+      totalVehiclesCount: vehicles.length,
+      totalCommentsCount: comments.length,
       commentDetails: Object.fromEntries(
         Object.entries(rawCommentsGrouped).map(([k, v]) => [k, v.length])
       ),
-      rawUsers: (users || []).map(u => ({ id: u.id, username: u.username, email: u.email, isVerified: u.is_verified })),
+      rawUsers: users.map(u => ({ id: u.id, username: u.username, email: u.email, isVerified: u.is_verified })),
       rawVehicles: rawVehiclesGrouped,
       rawComments: rawCommentsGrouped
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to retrieve database statistics." });
+    handleDatabaseError(err, res, "retrieve database statistics");
   }
 });
 

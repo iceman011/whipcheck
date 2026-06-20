@@ -392,6 +392,120 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [authErrorInput, setAuthErrorInput] = useState<string | null>(null);
+  const [sqlErrorState, setSqlErrorState] = useState<{ requiredSql: string; message: string; tableName: string } | null>(null);
+
+  const handleFrontendError = (err: any) => {
+    console.warn("Captured database/frontend warning status:", err);
+    if (!err) return;
+    const errText = err.message || String(err);
+    const isMissingTable = 
+      err?.code === "42P01" || 
+      err?.code === "PGRST125" ||
+      errText.toLowerCase().includes("relation") && errText.toLowerCase().includes("does not exist") ||
+      errText.toLowerCase().includes("invalid path specified in request url") ||
+      errText.toLowerCase().includes("pgrst125");
+
+    if (isMissingTable) {
+      const tableMatch = errText.match(/relation "public\.(.+?)"/i) || [null, "requested database table"];
+      const tableName = tableMatch[1] || "requested database table";
+      
+      const sqlSchema = `-- ========================================================
+-- WHIPCHECK COMPLETE SUPABASE SETUP SCRIPT
+-- ========================================================
+-- Execute this script in your Supabase SQL Editor to build all tables!
+
+-- 1. Create WhipCheck saved vehicles table
+CREATE TABLE IF NOT EXISTS public.vehicles (
+  id TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL,
+  image TEXT,
+  "isCar" BOOLEAN DEFAULT true,
+  make TEXT NOT NULL,
+  model TEXT NOT NULL,
+  generation TEXT,
+  "yearRange" TEXT,
+  confidence DOUBLE PRECISION,
+  color TEXT,
+  category TEXT,
+  "engineType" TEXT,
+  power TEXT,
+  horsepower TEXT,
+  torque TEXT,
+  "modelYear" TEXT,
+  "zeroToSixty" TEXT,
+  "estimatedNewPrice" TEXT,
+  "estimatedUsedPrice" TEXT,
+  trivia TEXT, -- JSON array of trivia
+  tips TEXT, -- JSON array of buyer/fan advice
+  specs TEXT, -- JSON object of specs (transmission, driveType, fuelEconomy)
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for vehicles
+ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to vehicles"
+  ON public.vehicles FOR ALL USING (true) WITH CHECK (true);
+
+-- 2. Create comments & rating review list
+CREATE TABLE IF NOT EXISTS public.comments (
+  id TEXT PRIMARY KEY,
+  car_id TEXT NOT NULL,
+  author TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  comfort INTEGER,
+  "gasConsumption" INTEGER,
+  performance INTEGER,
+  reliability INTEGER,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for comments
+ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to comments"
+  ON public.comments FOR ALL USING (true) WITH CHECK (true);
+
+-- 3. Create WhipCheck registered users table
+CREATE TABLE IF NOT EXISTS public.whipcheck_users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  is_verified BOOLEAN DEFAULT false,
+  otp TEXT,
+  otp_expires BIGINT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for whipcheck_users
+ALTER TABLE public.whipcheck_users ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to whipcheck_users"
+  ON public.whipcheck_users FOR ALL USING (true) WITH CHECK (true);
+
+-- 4. Create image-recognition caching lookup engine
+CREATE TABLE IF NOT EXISTS public.whipcheck_identify_cache (
+  key TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS for whipcheck_identify_cache
+ALTER TABLE public.whipcheck_identify_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow public access to whipcheck_identify_cache"
+  ON public.whipcheck_identify_cache FOR ALL USING (true) WITH CHECK (true);`;
+
+      setSqlErrorState({
+        requiredSql: sqlSchema,
+        message: "One of the required Supabase database tables is missing. Please run the setup SQL script in your Supabase project to generate them.",
+        tableName: tableName
+      });
+    }
+  };
 
   // Custom Account Credentials States
   const [authFormMode, setAuthFormMode] = useState<'signin' | 'signup' | 'otp_verify'>('signin');
@@ -428,9 +542,22 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setDashboardStats(data);
+        setSqlErrorState(null);
+      } else {
+        const data = await res.json();
+        if (data.code === "TABLE_MISSING") {
+          setSqlErrorState({
+            requiredSql: data.requiredSql,
+            message: data.message,
+            tableName: data.tableName
+          });
+        } else {
+          console.error("Dashboard response error:", data.error || "Unknown response");
+        }
       }
     } catch (err) {
       console.error("Failed to load dashboard stats", err);
+      handleFrontendError(err);
     } finally {
       setIsLoadingDashboard(false);
     }
@@ -532,7 +659,7 @@ export default function App() {
       setSupabaseTotalCarCount(carCount || 0);
       setSupabaseTotalCommentCount(commentCount || 0);
     } catch (err: any) {
-      console.error("Failed to query Supabase counts:", err);
+      console.warn("Failed to query Supabase counts (expected if setup is matching):", err);
       setSupabaseCountsError(err.message || String(err));
     } finally {
       setIsFetchingSupabaseCounts(false);
@@ -2219,6 +2346,7 @@ alter table public.comments enable row level security;
     setAuthLoading(true);
     setAuthErrorInput(null);
     setAuthMessage(null);
+    setSqlErrorState(null);
 
     try {
       const res = await fetch("/api/auth/signup", {
@@ -2233,6 +2361,13 @@ alter table public.comments enable row level security;
 
       const data = await res.json();
       if (!res.ok) {
+        if (data.code === "TABLE_MISSING") {
+          setSqlErrorState({
+            requiredSql: data.requiredSql,
+            message: data.message,
+            tableName: data.tableName
+          });
+        }
         throw new Error(data.error || "Form validation failed.");
       }
 
@@ -2263,6 +2398,7 @@ alter table public.comments enable row level security;
     setAuthLoading(true);
     setAuthErrorInput(null);
     setAuthMessage(null);
+    setSqlErrorState(null);
     setDevOtpCode("");
 
     try {
@@ -2277,6 +2413,13 @@ alter table public.comments enable row level security;
 
       const data = await res.json();
       if (!res.ok) {
+        if (data.code === "TABLE_MISSING") {
+          setSqlErrorState({
+            requiredSql: data.requiredSql,
+            message: data.message,
+            tableName: data.tableName
+          });
+        }
         throw new Error(data.error || "Incorrect login credentials.");
       }
 
@@ -2631,6 +2774,48 @@ alter table public.comments enable row level security;
                   <span className="text-sm font-black tracking-widest text-emerald-400 font-mono select-all">{devOtpCode}</span>
                   <span className="text-[8.5px] text-indigo-400 uppercase font-bold shrink-0">Tap to Copy</span>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {sqlErrorState && (
+            <div className="p-4 bg-red-950/20 border border-amber-500/35 rounded-2xl space-y-3.5 shadow-xl shadow-black/50 animate-fade-in font-sans">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100 shrink-0 mt-0.5">
+                  <ShieldAlert className="h-5 w-5 text-amber-400" />
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-amber-400 font-mono">
+                    🛠️ SUPABASE TABLES MISSING
+                  </h4>
+                  <p className="text-[10.5px] text-slate-200 leading-normal">
+                    One or more required schema relations (including <code className="text-amber-300 font-mono select-all font-bold">{sqlErrorState.tableName}</code>) do not exist in your active Supabase database.
+                  </p>
+                  <p className="text-[9.5px] text-slate-400 leading-normal font-sans">
+                    {sqlErrorState.message}
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-900 text-slate-300 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9.5px] font-bold font-mono text-amber-400">📋 SUPABASE RUNNABLE SCHEMA SCRIPT</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(sqlErrorState.requiredSql);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/35 text-[9.5px] font-bold uppercase tracking-wider transition text-amber-300 cursor-pointer flex items-center gap-1.5"
+                  >
+                    Copy Schema SQL
+                  </button>
+                </div>
+                <pre className="text-[9px] max-h-40 overflow-y-auto bg-black/60 p-2.5 rounded border border-slate-900 font-mono text-slate-400 leading-normal whitespace-pre select-all">
+                  {sqlErrorState.requiredSql}
+                </pre>
+                <span className="text-[9px] block text-slate-400 font-sans italic text-center">
+                  Go to Supabase Dashboard &gt; SQL Editor &gt; Paste script &gt; Click Run
+                </span>
               </div>
             </div>
           )}
@@ -3638,9 +3823,41 @@ alter table public.comments enable row level security;
                     )}
 
                     {authErrorInput && (
-                      <div className="p-3 bg-red-950/40 border border-red-500/20 rounded-xl text-red-100 text-[10.5px] leading-relaxed flex items-start gap-2 font-mono">
-                        <ShieldAlert className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
-                        <span>{authErrorInput}</span>
+                      <div className="space-y-2">
+                        <div className="p-3 bg-red-950/40 border border-red-500/20 rounded-xl text-red-100 text-[10.5px] leading-relaxed flex items-start gap-2 font-mono">
+                          <ShieldAlert className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
+                          <div className="space-y-1">
+                            <span className="font-semibold block text-red-300">{authErrorInput}</span>
+                            {sqlErrorState && (
+                              <p className="text-[9.5px] text-slate-300 mt-1 leading-normal font-sans">
+                                {sqlErrorState.message}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {sqlErrorState && (
+                          <div className="p-3 bg-slate-950 rounded-xl border border-amber-500/20 text-slate-300 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9.5px] font-bold font-mono text-amber-400">📋 SUPABASE RUNNABLE SCHEMA SCRIPT</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(sqlErrorState.requiredSql);
+                                }}
+                                className="px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/35 text-[9px] font-bold uppercase transition text-amber-300 cursor-pointer"
+                              >
+                                Copy SQL Code
+                              </button>
+                            </div>
+                            <pre className="text-[8.5px] max-h-32 overflow-y-auto bg-black/60 p-2 rounded border border-slate-900 font-mono text-slate-400 leading-normal whitespace-pre select-all">
+                              {sqlErrorState.requiredSql}
+                            </pre>
+                            <span className="text-[9px] block text-slate-500 font-sans italic text-center">
+                              Go to Supabase Dashboard &gt; SQL Editor &gt; Paste visual script &gt; click run
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
 
