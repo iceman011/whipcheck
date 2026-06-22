@@ -7,6 +7,9 @@ import {
   MessageSquare, Share2, Send, Copy, Check, Users
 } from "lucide-react";
 
+// ————————————————————————————————————————————————————
+// NO-PERSISTENCE PURE INERT SINGLETON STORAGE (DEPENDS EXCLUSIVELY ON SUPABASE DATABASE SYSTEM)
+// ————————————————————————————————————————————————————
 const dummyStorage: Storage = {
   getItem: () => null,
   setItem: () => {},
@@ -330,24 +333,27 @@ export default function CarDetailsReport({
     e.preventDefault();
     if (!newCommentText.trim()) return;
 
+    const authorName = spotterUserName.trim() || "Anonymous Petrolhead";
+    const commentBody = newCommentText.trim();
+
+    // Check count of notes submitted specifically by this author on this vehicle
+    const authorCommentsCount = comments.filter(c => c.author && c.author.toLowerCase().trim() === authorName.toLowerCase().trim()).length;
+
     if (selectedPlanTier === 'chiptuning') {
-      if (comments.length >= 1) {
-        setSubscriptionWarning("🔒 Chiptuning Free is limited to 1 custom note/discuss entry. Upgrade to Teen Passion for up to 5 entries.");
+      if (authorCommentsCount >= 1) {
+        setSubscriptionWarning("🔒 Chiptuning Free is limited to 1 custom note/discuss entry per car. Upgrade to Teen Passion for up to 5 entries.");
         setTimeout(() => setSubscriptionWarning(null), 5000);
         onOpenPlans?.('teen_passion');
         return;
       }
     } else if (selectedPlanTier === 'teen_passion') {
-      if (comments.length >= 5) {
+      if (authorCommentsCount >= 5) {
         setSubscriptionWarning("🔒 Teen Passion premium is limited to 5 custom note/discuss entries per car. Upgrade to Gasoline Gold for unlimited entries.");
         setTimeout(() => setSubscriptionWarning(null), 5000);
         onOpenPlans?.('gasoline_gold');
         return;
       }
     }
-
-    const authorName = spotterUserName.trim() || "Anonymous Petrolhead";
-    const commentBody = newCommentText.trim();
 
     // Optimistically add locally with a temporary ID
     const tempId = `temp-${Date.now()}`;
@@ -988,11 +994,25 @@ Analyzed dynamically by Whipcheck GT Enthusiast Car Detector!`;
 
             {/* Plan Counter Status for Notes/Reviews */}
             <div className="flex justify-between items-center text-[8px] font-mono uppercase tracking-wider px-1 text-slate-500">
-              <span>Discussion Board Notes</span>
+              <span>Your Notes On This Car</span>
               {selectedPlanTier === 'chiptuning' ? (
-                <span className={comments.length >= 1 ? "text-amber-500 font-bold animate-pulse" : "text-emerald-400"}>Chiptuning Limit: {comments.length}/1 logged</span>
+                (() => {
+                  const myCount = comments.filter(c => c.author && c.author.toLowerCase().trim() === spotterUserName.toLowerCase().trim()).length;
+                  return (
+                    <span className={myCount >= 1 ? "text-amber-500 font-bold animate-pulse" : "text-emerald-400"}>
+                      Chiptuning Limit: {myCount}/1 logged
+                    </span>
+                  );
+                })()
               ) : selectedPlanTier === 'teen_passion' ? (
-                <span className={comments.length >= 5 ? "text-amber-500 font-bold animate-pulse" : "text-indigo-400"}>Teen Passion Limit: {comments.length}/5 logged</span>
+                (() => {
+                  const myCount = comments.filter(c => c.author && c.author.toLowerCase().trim() === spotterUserName.toLowerCase().trim()).length;
+                  return (
+                    <span className={myCount >= 5 ? "text-amber-500 font-bold animate-pulse" : "text-indigo-400"}>
+                      Teen Passion Limit: {myCount}/5 logged
+                    </span>
+                  );
+                })()
               ) : (
                 <span className="text-amber-400 font-black">Gasoline Gold: Unlimited ♾️</span>
               )}

@@ -1533,6 +1533,51 @@ app.post("/api/admin/reset-database", async (req, res) => {
   }
 });
 
+// Directly execute raw SQL migration / schema changes via the secure RFC channel
+app.post("/api/admin/execute-sql", async (req, res) => {
+  try {
+    const { sql } = req.body;
+    if (!sql || typeof sql !== "string") {
+      return res.status(400).json({ error: "No SQL query provided in the body parameters." });
+    }
+
+    const supabaseObj = getSupabase();
+    // Attempt standard Supabase RPC execution
+    const { data, error } = await supabaseObj.rpc("exec_sql", { sql_query: sql });
+
+    if (error) {
+      const errMessage = error.message || "";
+      const errCode = error.code || "";
+      if (errCode === "PGRST501" || errMessage.toLowerCase().includes("does not exist")) {
+        return res.status(412).json({
+          success: false,
+          code: "RPC_MISSING",
+          error: "Supabase 'exec_sql' RPC helper function not found.",
+          message: "To apply table changes directly from this dashboard, your Supabase project must contain a safe execution helper. Paste and run the setup script below in your Supabase SQL Editor once, then press apply!",
+          setupSql: `CREATE OR REPLACE FUNCTION public.exec_sql(sql_query text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  EXECUTE sql_query;
+END;
+$$;`,
+          originalSql: sql
+        });
+      }
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      message: "Database schema migration executed successfully on your Supabase host!"
+    });
+  } catch (err: any) {
+    handleDatabaseError(err, res, "direct database SQL execution", req);
+  }
+});
+
 // Clear/Reset ONLY registered users
 app.post("/api/admin/wipe-users", async (req, res) => {
   try {
@@ -1607,6 +1652,16 @@ app.get("/api/admin/database-stats", async (req, res) => {
       });
     }
 
+    let cacheRowsCount = 0;
+    try {
+      const { data: dbCache, error: cacheErr } = await supabaseObj.from("whipcheck_identify_cache").select("key");
+      if (!cacheErr) {
+        cacheRowsCount = dbCache?.length || 0;
+      }
+    } catch (err) {
+      console.warn("Optional whipcheck_identify_cache count failed:", err);
+    }
+
     const rawVehiclesGrouped: Record<string, any[]> = {};
     (vehicles || []).forEach(v => {
       const uid = v.user_id || "unknown";
@@ -1630,6 +1685,7 @@ app.get("/api/admin/database-stats", async (req, res) => {
       vehiclesUserCount: Object.keys(rawVehiclesGrouped).length,
       totalVehiclesCount: vehicles.length,
       totalCommentsCount: comments.length,
+      totalCacheCount: cacheRowsCount,
       commentDetails: Object.fromEntries(
         Object.entries(rawCommentsGrouped).map(([k, v]) => [k, v.length])
       ),

@@ -27,9 +27,47 @@ import {
 } from "./lib/supabase";
 
 // ————————————————————————————————————————————————————
-// NO-PERSISTENCE PURE INERT SINGLETON STORAGE (DEPENDS EXCLUSIVELY ON SUPABASE DATABASE SYSTEM)
+// NO-PERSISTENCE PURE INERT SINGLETON STORAGE EXCEPT FOR THEMING
 // ————————————————————————————————————————————————————
-const dummyStorage: Storage = {
+const customLocalStorage: Storage = {
+  getItem: (key: string) => {
+    if (key === "whipcheck_theme_id") {
+      try {
+        return window.localStorage.getItem(key);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  },
+  setItem: (key: string, value: string) => {
+    if (key === "whipcheck_theme_id") {
+      try {
+        window.localStorage.setItem(key, value);
+      } catch (e) {}
+    }
+  },
+  removeItem: (key: string) => {
+    if (key === "whipcheck_theme_id") {
+      try {
+        window.localStorage.removeItem(key);
+      } catch (e) {}
+    }
+  },
+  clear: () => {
+    try {
+      window.localStorage.removeItem("whipcheck_theme_id");
+    } catch (e) {}
+  },
+  key: (index: number) => {
+    return null;
+  },
+  get length() {
+    return 0;
+  }
+} as Storage;
+
+const customSessionStorage: Storage = {
   getItem: () => null,
   setItem: () => {},
   removeItem: () => {},
@@ -38,8 +76,8 @@ const dummyStorage: Storage = {
   get length() { return 0; }
 } as Storage;
 
-const localStorage = dummyStorage;
-const sessionStorage = dummyStorage;
+const localStorage = customLocalStorage;
+const sessionStorage = customSessionStorage;
 
 // Custom apiFetch wrapper that injects live Supabase overrides when calling local server APIs 
 const apiFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -188,9 +226,162 @@ export function getPrettifiedJson(val: string): string {
   }
 }
 
+export const SCHEMA_CREATE_SQL = `-- Create WhipCheck saved vehicles table on Supabase
+create table public.vehicles (
+  id text primary key,
+  timestamp text not null,
+  image text not null,
+  "isCar" boolean default true,
+  make text,
+  model text,
+  year integer,
+  color text,
+  transmission text,
+  drivetrain text,
+  engine text,
+  power text,
+  zeroToSixty text,
+  topSpeed text,
+  curbWeight text,
+  gasConsumption text,
+  rarityScore integer,
+  productionNumbers text,
+  heritageSummary text,
+  funFact text,
+  marketValue text,
+  latitude text,
+  longitude text,
+  spotterName text,
+  rating integer,
+  comfort integer,
+  gasSatisfaction integer,
+  performanceValue integer,
+  reliability integer,
+  user_id text
+);
+
+-- Enable Row Level Security (RLS) for vehicles
+alter table public.vehicles enable row level security;
+
+-- Create policy to allow public access to vehicles
+create policy "Allow public access to vehicles" 
+  on public.vehicles 
+  for all 
+  using (true) 
+  with check (true);
+
+-- Create comments table on Supabase
+create table public.comments (
+  id text primary key,
+  car_id text not null,
+  author text not null,
+  text text not null,
+  timestamp text,
+  comfort integer,
+  "gasConsumption" integer,
+  performance integer,
+  reliability integer,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS) for comments
+alter table public.comments enable row level security;
+
+-- Create policy to allow public access to comments
+create policy "Allow public access to comments"
+  on public.comments
+  for all
+  using (true)
+  with check (true);
+
+-- Create custom user security details on Supabase
+create table public.whipcheck_users (
+  id text primary key,
+  username text not null,
+  email text not null unique,
+  password_hash text not null,
+  is_verified boolean default false,
+  otp text,
+  otp_expires bigint,
+  plan_tier text default 'chiptuning',
+  scans_count_used integer default 0,
+  compare_list text default '[]',
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS) for custom user data pool
+alter table public.whipcheck_users enable row level security;
+
+create policy "Allow public access to whipcheck_users"
+  on public.whipcheck_users
+  for all
+  using (true)
+  with check (true);
+
+-- Create computer vision image cache on Supabase
+create table public.whipcheck_identify_cache (
+  key text primary key,
+  data text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS) for computer vision image cache
+alter table public.whipcheck_identify_cache enable row level security;
+
+create policy "Allow public access to whipcheck_identify_cache"
+  on public.whipcheck_identify_cache
+  for all
+  using (true)
+  with check (true);`;
+
+export const SCHEMA_UPGRADE_SQL = `-- Upgrade existing tables to match the latest application schema
+-- Adds subscription plan tier, scan usage count, and active compare cache to public.whipcheck_users
+
+-- 1. Alter public.whipcheck_users to include subscription parameters
+alter table public.whipcheck_users add column if not exists plan_tier text default 'chiptuning';
+alter table public.whipcheck_users add column if not exists scans_count_used integer default 0;
+alter table public.whipcheck_users add column if not exists compare_list text default '[]';
+
+-- 2. Alter direct scans link mapping to vehicles on Supabase
+alter table public.vehicles add column if not exists user_id text;
+
+-- 3. Verify and enforce RLS (Row Level Security) safety policies
+alter table public.vehicles enable row level security;
+alter table public.comments enable row level security;
+alter table public.whipcheck_users enable row level security;
+alter table public.whipcheck_identify_cache enable row level security;
+
+-- 4. Enable Safe Raw SQL execution function in Supabase for direct UI migrations
+CREATE OR REPLACE FUNCTION public.exec_sql(sql_query text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  EXECUTE sql_query;
+END;
+$$;`;
+
 export default function App() {
   // Mobile UI Tabs: 'dashboard' | 'scan' | 'garage' | 'account'
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'scan' | 'garage' | 'account'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'scan' | 'garage' | 'account'>(() => {
+    try {
+      const savedUser = localStorage.getItem("whipcheck_user_session");
+      return savedUser ? 'dashboard' : 'scan';
+    } catch (e) {
+      return 'scan';
+    }
+  });
+
+  // Direct SQL execution states and handlers
+  const [isApplyingSql, setIsApplyingSql] = useState<boolean>(false);
+  const [sqlExecutionFeedback, setSqlExecutionFeedback] = useState<{
+    success: boolean;
+    message: string;
+    error?: string;
+    code?: string;
+    setupSql?: string;
+  } | null>(null);
 
   // Garage and saving errors validation messages
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -211,6 +402,7 @@ export default function App() {
   const [scansCountUsed, setScansCountUsed] = useState<number>(() => {
     return parseInt(localStorage.getItem("whipcheck_scan_use_count") || "0", 10);
   });
+  const [sessionScansUsed, setSessionScansUsed] = useState<number>(0);
   const [activePlanSelection, setActivePlanSelection] = useState<'chiptuning' | 'teen_passion' | 'gasoline_gold'>('chiptuning');
   const [showSubscriptionModal, setShowSubscriptionModal] = useState<boolean>(false);
   const [showParentAuthorization, setShowParentAuthorization] = useState<boolean>(false);
@@ -557,7 +749,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   });
   const [adminUsernameInput, setAdminUsernameInput] = useState<string>("");
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>("");
-  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data' | 'live_explorer' | 'localstorage' | 'supabase_wipe'>('db');
+  const [adminSubTab, setAdminSubTab] = useState<'db' | 'script' | 'data' | 'live_explorer' | 'supabase_wipe'>('db');
 
   // Supabase connection health check state
   const [supabaseHealth, setSupabaseHealth] = useState<{
@@ -1396,7 +1588,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
@@ -1449,7 +1641,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
@@ -1491,14 +1683,14 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   };
 
   const checkScanLimitReached = () => {
-    // Guest user constraints: allow guest user to scan only once
-    if (!currentUser && scansCountUsed >= 1) {
+    // Guest user constraints: allow guest user to scan up to 3 times in current session (matching Chiptuning Free tier)
+    if (!currentUser && sessionScansUsed >= 3) {
       return true;
     }
-    if (selectedPlanTier === 'chiptuning' && (scansCountUsed >= 3 || garage.length >= 3)) {
+    if (selectedPlanTier === 'chiptuning' && (sessionScansUsed >= 3 || garage.length >= 3)) {
       return true;
     }
-    if (selectedPlanTier === 'teen_passion' && (scansCountUsed >= 15 || garage.length >= 15)) {
+    if (selectedPlanTier === 'teen_passion' && (sessionScansUsed >= 15 || garage.length >= 15)) {
       return true;
     }
     return false;
@@ -1509,7 +1701,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
@@ -1525,7 +1717,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 1 scan. Please register or sign in to continue scanning and save cars!");
+        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
         setScanStep('idle');
         return;
       }
@@ -1593,6 +1785,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
       // Track and increment the scan use count
       const newScanCount = scansCountUsed + 1;
       setScansCountUsed(newScanCount);
+      setSessionScansUsed(prev => prev + 1);
       localStorage.setItem("whipcheck_scan_use_count", newScanCount.toString());
       uploadUserProfileUpdates({ scans_count_used: newScanCount });
     } catch (err: any) {
@@ -1715,126 +1908,49 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   }
 
   const handleCopySql = () => {
-    const fullSchema = `-- Create WhipCheck saved vehicles table on Supabase
-create table public.vehicles (
-  id text primary key,
-  timestamp text not null,
-  image text not null,
-  "isCar" boolean default true,
-  make text,
-  model text,
-  generation text,
-  "yearRange" text,
-  confidence numeric,
-  color text,
-  category text,
-  "engineType" text,
-  power text,
-  horsepower text,
-  torque text,
-  "modelYear" text,
-  "zeroToSixty" text,
-  "estimatedNewPrice" text,
-  "estimatedUsedPrice" text,
-  trivia jsonb,
-  tips jsonb,
-  specs jsonb,
-  user_id text,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Enable Row Level Security (RLS) for vehicles
-alter table public.vehicles enable row level security;
-
--- Create policy to allow public access to vehicles
-create policy "Allow public access to vehicles" 
-  on public.vehicles 
-  for all 
-  using (true) 
-  with check (true);
-
--- Create comments table on Supabase
-create table public.comments (
-  id text primary key,
-  car_id text not null,
-  author text not null,
-  text text not null,
-  timestamp text,
-  comfort integer,
-  "gasConsumption" integer,
-  performance integer,
-  reliability integer,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Enable Row Level Security (RLS) for comments
-alter table public.comments enable row level security;
-
--- Create policy to allow public access to comments
-create policy "Allow public access to comments"
-  on public.comments
-  for all
-  using (true)
-  with check (true);
-
--- Create custom user security details on Supabase
-create table public.whipcheck_users (
-  id text primary key,
-  username text not null,
-  email text not null unique,
-  password_hash text not null,
-  is_verified boolean default false,
-  otp text,
-  otp_expires bigint,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Enable Row Level Security (RLS) for custom user data pool
-alter table public.whipcheck_users enable row level security;
-
-create policy "Allow public access to whipcheck_users"
-  on public.whipcheck_users
-  for all
-  using (true)
-  with check (true);
-
--- Create computer vision image cache on Supabase
-create table public.whipcheck_identify_cache (
-  key text primary key,
-  data text not null,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Enable Row Level Security (RLS) for computer vision image cache
-alter table public.whipcheck_identify_cache enable row level security;
-
-create policy "Allow public access to whipcheck_identify_cache"
-  on public.whipcheck_identify_cache
-  for all
-  using (true)
-  with check (true);`;
-
-    const upgradeSchema = `-- Upgrade existing tables to match the latest application schema
--- Adds the missing user_id column to direct scans link mapping to Supabase securely
-
--- 1. Alter the vehicles table to add the user_id mapping column
-alter table public.vehicles add column if not exists user_id text;
-
--- 2. Verify and enforce RLS (Row Level Security) fallback defaults helper
-alter table public.vehicles enable row level security;
-
--- 3. Ensure public access comments table and policy are safe
-alter table public.comments enable row level security;
-
--- Notification
--- Run this in your Supabase SQL Editor, then retry direct account sync!`;
-
-    const txt = sqlSchemaMode === 'create' ? fullSchema : upgradeSchema;
+    const txt = sqlSchemaMode === 'create' ? SCHEMA_CREATE_SQL : SCHEMA_UPGRADE_SQL;
 
     navigator.clipboard.writeText(txt).then(() => {
       setCopiedSql(true);
       setTimeout(() => setCopiedSql(false), 3000);
     });
+  };
+
+  const handleApplySqlDirectly = async (sqlText: string) => {
+    setIsApplyingSql(true);
+    setSqlExecutionFeedback(null);
+    try {
+      const res = await apiFetch("/api/admin/execute-sql", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: sqlText })
+      });
+      const data = await res.json();
+      if (res.ok && data && data.success) {
+        setSqlExecutionFeedback({
+          success: true,
+          message: data.message || "Database changes applied successfully!"
+        });
+        // Auto-refresh states when migration is successfully done
+        fetchAdminDbStats();
+      } else {
+        setSqlExecutionFeedback({
+          success: false,
+          error: data.error || "Execution failed.",
+          message: data.message || "An error occurred during real-time database modifications.",
+          code: data.code,
+          setupSql: data.setupSql
+        });
+      }
+    } catch (err: any) {
+      setSqlExecutionFeedback({
+        success: false,
+        error: err.message || "Network Error",
+        message: "Failed to connect to the backend SQL migration pipeline."
+      });
+    } finally {
+      setIsApplyingSql(false);
+    }
   };
 
   const handleManualSync = async () => {
@@ -2708,6 +2824,7 @@ alter table public.comments enable row level security;
         setAuthPassword("");
         setAuthConfirmPassword("");
         await syncCustomUserGarage(data.user.id);
+        setActiveTab('dashboard');
       }
     } catch (err: any) {
       setAuthErrorInput(err.message || String(err));
@@ -2754,6 +2871,7 @@ alter table public.comments enable row level security;
         setAuthUsername("");
         setAuthPassword("");
         await syncCustomUserGarage(data.user.id);
+        setActiveTab('dashboard');
       }
     } catch (err: any) {
       setAuthErrorInput(err.message || String(err));
@@ -2793,6 +2911,7 @@ alter table public.comments enable row level security;
     setCurrentUser(null);
     localStorage.removeItem("whipcheck_user_session");
     localStorage.setItem("whipcheck_spotter_name", "Guest");
+    setActiveTab('scan');
     setAuthEmail("");
     setAuthFormMode('signin');
     setAuthMessage("Logged out successfully.");
@@ -2866,6 +2985,7 @@ alter table public.comments enable row level security;
       setUrlInput("");
 
       setCurrentUser(null);
+      setActiveTab('scan');
       const guestSaved = localStorage.getItem("car_spotter_garage_v2_guest");
       if (guestSaved) {
         try {
@@ -2951,8 +3071,8 @@ alter table public.comments enable row level security;
               <div className="text-[8px] font-mono space-y-0.5 tracking-tight text-right text-zinc-400">
                 <div>
                   <span className="text-[7px] text-zinc-500 uppercase">Scans: </span>
-                  {selectedPlanTier === 'chiptuning' && <span className="font-bold text-emerald-400">{Math.max(0, 3 - scansCountUsed)}/3 rmn</span>}
-                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-indigo-400">{Math.max(0, 15 - scansCountUsed)}/15 rmn</span>}
+                  {selectedPlanTier === 'chiptuning' && <span className="font-bold text-emerald-400">{Math.max(0, 3 - sessionScansUsed)}/3 rmn</span>}
+                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-indigo-400">{Math.max(0, 15 - sessionScansUsed)}/15 rmn</span>}
                   {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
                 </div>
                 <div>
@@ -3174,9 +3294,11 @@ alter table public.comments enable row level security;
                   <div>
                     <span className="text-[9px] font-mono text-zinc-500 uppercase block pl-0.5 mb-1">My Activity Logging</span>
                     <p className="text-[10px] text-zinc-300 font-mono pl-0.5">
-                      <strong className="text-slate-100 font-extrabold">{garage.length}</strong> Garage cars
+                      <strong className="text-slate-100 font-extrabold">{scansCountUsed}</strong> Total Scan{scansCountUsed !== 1 ? "s" : ""}
                       {" • "}
-                      <strong className="text-slate-100 font-extrabold">{dashboardStats?.userCommentsCount || 0}</strong> review{ (dashboardStats?.userCommentsCount || 0) !== 1 ? "s" : "" }
+                      <strong className="text-slate-100 font-extrabold">{garage.length}</strong> Garage Car{garage.length !== 1 ? "s" : ""}
+                      {" • "}
+                      <strong className="text-slate-100 font-extrabold">{dashboardStats?.userCommentsCount || 0}</strong> Feedback{ (dashboardStats?.userCommentsCount || 0) !== 1 ? "s" : "" }
                     </p>
                   </div>
                 </div>
@@ -3235,141 +3357,7 @@ alter table public.comments enable row level security;
                 </div>
               </div>
 
-              {/* Interactive Module: Spotlight TOP RATED COMMUNITY VEHICLE */}
-              {dashboardStats && dashboardStats.topRatedCar && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 px-0.5">
-                    <Sparkles className="h-3.5 w-3.5 text-yellow-450 shrink-0" />
-                    <h3 className="text-xs font-black text-slate-200 font-display uppercase tracking-wider">Spotlight: Top Rated Model</h3>
-                  </div>
-                  
-                  <div className="rounded-2xl border border-slate-850/80 bg-slate-950 overflow-hidden relative shadow-md">
-                    {/* Immersive cover photo */}
-                    <div className="relative h-44 bg-slate-900">
-                      <img
-                        src={dashboardStats.topRatedCar.image}
-                        alt={`${dashboardStats.topRatedCar.make} ${dashboardStats.topRatedCar.model}`}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent"></div>
-                      
-                      <div className="absolute top-3 right-3 flex items-center gap-1 bg-yellow-450/15 backdrop-blur-md px-2.5 py-0.5 text-xs text-yellow-400 border border-yellow-500/25 rounded-full font-mono font-black shadow-lg">
-                        ★ {dashboardStats.topRatedCar.averageRating.toFixed(1)} / 5
-                      </div>
 
-                      <div className="absolute bottom-3 left-4">
-                        <span className="text-[8px] font-mono uppercase bg-emerald-950/50 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded mb-1 inline-block">
-                          {dashboardStats.topRatedCar.category}
-                        </span>
-                        <h4 className="text-base font-black text-white uppercase leading-none font-display">
-                          {dashboardStats.topRatedCar.modelYear} {dashboardStats.topRatedCar.make} {dashboardStats.topRatedCar.model}
-                        </h4>
-                      </div>
-                    </div>
-
-                    {/* Quick attributes list */}
-                    <div className="p-3.5 space-y-3 font-mono text-[10px]">
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-zinc-400 border-b border-slate-900 pb-2.5">
-                        <div className="flex justify-between">
-                          <span className="text-zinc-500">Powertrain:</span>
-                          <strong className="text-slate-200 text-right line-clamp-1 truncate max-w-[100px]">{dashboardStats.topRatedCar.engineType}</strong>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-zinc-500">Horsepower:</span>
-                          <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.horsepower || dashboardStats.topRatedCar.power}</strong>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-zinc-500">0-100 km/h:</span>
-                          <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.zeroToSixty}</strong>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-zinc-500">Market (EGP):</span>
-                          <strong className="text-pink-400 text-right font-bold">{dashboardStats.topRatedCar.estimatedUsedPrice}</strong>
-                        </div>
-                      </div>
-
-                      {/* Community Shared Ratings for Key Performance Parameters */}
-                      <div className="space-y-2 border-b border-slate-900 pb-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[9px] font-black text-slate-300 uppercase tracking-wider">🌟 Community Rated Parameters</span>
-                          <span className="text-[8px] text-zinc-500 uppercase font-bold">User-Shared Ratings</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-zinc-400">
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[9px] leading-none">
-                              <span className="text-zinc-500">Performance:</span>
-                              <span className="text-amber-400 font-bold">{dashboardStats.topRatedCar.performanceAvg?.toFixed(1) || "4.9"} ★</span>
-                            </div>
-                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
-                              <div 
-                                className="h-full bg-amber-500 rounded-full transition-all duration-500" 
-                                style={{ width: `${((dashboardStats.topRatedCar.performanceAvg || 4.9) / 5) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[9px] leading-none">
-                              <span className="text-zinc-500">Comfort:</span>
-                              <span className="text-blue-400 font-bold">{dashboardStats.topRatedCar.comfortAvg?.toFixed(1) || "4.7"} ★</span>
-                            </div>
-                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
-                              <div 
-                                className="h-full bg-blue-500 rounded-full transition-all duration-500" 
-                                style={{ width: `${((dashboardStats.topRatedCar.comfortAvg || 4.7) / 5) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[9px] leading-none">
-                              <span className="text-zinc-500">Reliability:</span>
-                              <span className="text-emerald-400 font-bold">{dashboardStats.topRatedCar.reliabilityAvg?.toFixed(1) || "4.8"} ★</span>
-                            </div>
-                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
-                              <div 
-                                className="h-full bg-emerald-500 rounded-full transition-all duration-500" 
-                                style={{ width: `${((dashboardStats.topRatedCar.reliabilityAvg || 4.8) / 5) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[9px] leading-none">
-                              <span className="text-zinc-500">Gas Efficiency:</span>
-                              <span className="text-purple-400 font-bold">{dashboardStats.topRatedCar.gasAvg?.toFixed(1) || "4.2"} ★</span>
-                            </div>
-                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
-                              <div 
-                                className="h-full bg-purple-500 rounded-full transition-all duration-500" 
-                                style={{ width: `${((dashboardStats.topRatedCar.gasAvg || 4.2) / 5) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Actions to inspect model */}
-                      <div className="flex items-center justify-between">
-                        <span className="text-[8.5px] text-zinc-500 uppercase leading-none">
-                          Based on {dashboardStats.topRatedCar.ratingCount} reviews
-                        </span>
-                        <button
-                          onClick={() => {
-                            setSelectedGarageCar(dashboardStats.topRatedCar);
-                            setActiveTab('garage');
-                          }}
-                          className={`px-3 py-1.5 ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-[9px] rounded-lg tracking-wider transition uppercase cursor-pointer flex items-center gap-1`}
-                        >
-                          <span>Inspect Model Spec Sheet</span>
-                          <ChevronRight className="h-3 w-3 text-black font-black" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* Call to action scanning block */}
               <div className={`p-4 rounded-2xl border ${activeTheme.accentBorder} bg-[#08090d]/80 space-y-2shadow-md`}>
@@ -3550,6 +3538,142 @@ alter table public.comments enable row level security;
                       For peak accuracy, capture high-contrast side viewpoints or 3/4 front profiles in clear lighting.
                     </p>
                   </div>
+
+                  {/* Interactive Module: Spotlight TOP RATED COMMUNITY VEHICLE (Landing Page Only) */}
+                  {dashboardStats && dashboardStats.topRatedCar && (
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center gap-1.5 px-0.5">
+                        <Sparkles className="h-3.5 w-3.5 text-yellow-450 shrink-0" />
+                        <h3 className="text-xs font-black text-slate-200 font-display uppercase tracking-wider">Spotlight: Top Rated Model</h3>
+                      </div>
+                      
+                      <div className="rounded-2xl border border-slate-850/80 bg-slate-950 overflow-hidden relative shadow-md">
+                        {/* Immersive cover photo */}
+                        <div className="relative h-44 bg-slate-900">
+                          <img
+                            src={dashboardStats.topRatedCar.image}
+                            alt={`${dashboardStats.topRatedCar.make} ${dashboardStats.topRatedCar.model}`}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent"></div>
+                          
+                          <div className="absolute top-3 right-3 flex items-center gap-1 bg-yellow-450/15 backdrop-blur-md px-2.5 py-0.5 text-xs text-yellow-400 border border-yellow-500/25 rounded-full font-mono font-black shadow-lg">
+                            ★ {dashboardStats.topRatedCar.averageRating.toFixed(1)} / 5
+                          </div>
+
+                          <div className="absolute bottom-3 left-4">
+                            <span className="text-[8px] font-mono uppercase bg-emerald-950/50 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded mb-1 inline-block">
+                              {dashboardStats.topRatedCar.category}
+                            </span>
+                            <h4 className="text-base font-black text-white uppercase leading-none font-display">
+                              {dashboardStats.topRatedCar.modelYear} {dashboardStats.topRatedCar.make} {dashboardStats.topRatedCar.model}
+                            </h4>
+                          </div>
+                        </div>
+
+                        {/* Quick attributes list */}
+                        <div className="p-3.5 space-y-3 font-mono text-[10px]">
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-zinc-400 border-b border-slate-900 pb-2.5">
+                            <div className="flex justify-between">
+                              <span className="text-zinc-500">Powertrain:</span>
+                              <strong className="text-slate-200 text-right line-clamp-1 truncate max-w-[100px]">{dashboardStats.topRatedCar.engineType}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-zinc-500">Horsepower:</span>
+                              <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.horsepower || dashboardStats.topRatedCar.power}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-zinc-500">0-100 km/h:</span>
+                              <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.zeroToSixty}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-zinc-500">Market (EGP):</span>
+                              <strong className="text-pink-400 text-right font-bold">{dashboardStats.topRatedCar.estimatedUsedPrice}</strong>
+                            </div>
+                          </div>
+
+                          {/* Community Shared Ratings for Key Performance Parameters */}
+                          <div className="space-y-2 border-b border-slate-900 pb-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-black text-slate-300 uppercase tracking-wider">🌟 Community Rated Parameters</span>
+                              <span className="text-[8px] text-zinc-500 uppercase font-bold">User-Shared Ratings</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-zinc-400">
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[9px] leading-none">
+                                  <span className="text-zinc-500">Performance:</span>
+                                  <span className="text-amber-400 font-bold">{dashboardStats.topRatedCar.performanceAvg?.toFixed(1) || "4.9"} ★</span>
+                                </div>
+                                <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-amber-500 rounded-full transition-all duration-500" 
+                                    style={{ width: `${((dashboardStats.topRatedCar.performanceAvg || 4.9) / 5) * 100}%` }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[9px] leading-none">
+                                  <span className="text-zinc-500">Comfort:</span>
+                                  <span className="text-blue-400 font-bold">{dashboardStats.topRatedCar.comfortAvg?.toFixed(1) || "4.7"} ★</span>
+                                </div>
+                                <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-blue-500 rounded-full transition-all duration-500" 
+                                    style={{ width: `${((dashboardStats.topRatedCar.comfortAvg || 4.7) / 5) * 100}%` }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[9px] leading-none">
+                                  <span className="text-zinc-500">Reliability:</span>
+                                  <span className="text-emerald-400 font-bold">{dashboardStats.topRatedCar.reliabilityAvg?.toFixed(1) || "4.8"} ★</span>
+                                </div>
+                                <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-emerald-500 rounded-full transition-all duration-500" 
+                                    style={{ width: `${((dashboardStats.topRatedCar.reliabilityAvg || 4.8) / 5) * 100}%` }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[9px] leading-none">
+                                  <span className="text-zinc-500">Gas Efficiency:</span>
+                                  <span className="text-purple-400 font-bold">{dashboardStats.topRatedCar.gasAvg?.toFixed(1) || "4.2"} ★</span>
+                                </div>
+                                <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-purple-500 rounded-full transition-all duration-500" 
+                                    style={{ width: `${((dashboardStats.topRatedCar.gasAvg || 4.2) / 5) * 100}%` }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Actions to inspect model */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-[8.5px] text-zinc-500 uppercase leading-none">
+                              Based on {dashboardStats.topRatedCar.ratingCount} reviews
+                            </span>
+                            <button
+                              onClick={() => {
+                                setSelectedGarageCar(dashboardStats.topRatedCar);
+                                setActiveTab('garage');
+                              }}
+                              className={`px-3 py-1.5 ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-[9px] rounded-lg tracking-wider transition uppercase cursor-pointer flex items-center gap-1`}
+                            >
+                              <span>Inspect Model Spec Sheet</span>
+                              <ChevronRight className="h-3 w-3 text-black font-black" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -4719,21 +4843,6 @@ alter table public.comments enable row level security;
                     <button
                       type="button"
                       onClick={() => {
-                        setAdminSubTab('localstorage');
-                      }}
-                      className={`py-2 px-1 rounded-lg font-bold transition flex items-center justify-center gap-1 cursor-pointer truncate ${
-                        adminSubTab === 'localstorage'
-                          ? 'bg-red-500/15 text-red-400 border border-red-500/25 shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200 border border-transparent'
-                      }`}
-                    >
-                      <HardDrive className="h-3 w-3 shrink-0" />
-                      <span>LOCAL STORAGE</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
                         setAdminSubTab('supabase_wipe');
                         fetchSupabaseTotalCounts();
                       }}
@@ -4876,80 +4985,88 @@ alter table public.comments enable row level security;
                           </button>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={handleCopySql}
-                          className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-red-500/10 hover:bg-red-650/20 border border-red-500/35 hover:border-red-550/60 font-mono text-[10px] font-bold text-red-400 hover:text-white transition cursor-pointer active:scale-[0.99]"
-                        >
-                          {copiedSql ? (
-                            <>
-                              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                              <span>SQL SCHEMA COPIED TO CLIPBOARD</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-4 w-4" />
-                              <span>{sqlSchemaMode === 'create' ? "COPY COMPLETE DB SQL SCHEMA" : "COPY TABLE UPGRADE / ALTER SQL"}</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCopySql}
+                            className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-red-500/10 hover:bg-red-650/20 border border-red-500/35 hover:border-red-550/60 font-mono text-[10px] font-bold text-red-100 hover:text-white transition cursor-pointer active:scale-[0.99]"
+                          >
+                            {copiedSql ? (
+                              <>
+                                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                                <span>SQL SCHEMA COPIED</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-4 w-4 text-red-400" />
+                                <span>{sqlSchemaMode === 'create' ? "COPY COMPLETE SCHEMA" : "COPY TABLE UPGRADE SQL"}</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleApplySqlDirectly(sqlSchemaMode === 'create' ? SCHEMA_CREATE_SQL : SCHEMA_UPGRADE_SQL)}
+                            disabled={isApplyingSql || !isSupabaseConfigured()}
+                            className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-emerald-500/10 hover:bg-emerald-600/20 disabled:bg-slate-900 disabled:opacity-40 border border-emerald-500/35 hover:border-emerald-550/60 disabled:border-slate-800 font-mono text-[10px] font-bold text-emerald-400 disabled:text-zinc-600 hover:text-white transition cursor-pointer active:scale-[0.99]"
+                          >
+                            {isApplyingSql ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>APPLYING CHANGES...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Database className="h-4 w-4 text-emerald-400" />
+                                <span>APPLY DIRECTLY TO DB</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+
+                        {sqlExecutionFeedback && (
+                          <div className={`p-3 rounded-xl border font-mono text-[9.5px] leading-relaxed space-y-2 ${
+                            sqlExecutionFeedback.success 
+                              ? 'bg-emerald-950/40 border-emerald-500/25 text-emerald-300' 
+                              : 'bg-red-950/40 border-red-500/25 text-red-300'
+                          }`}>
+                            <div className="flex items-center gap-1.5 font-bold">
+                              {sqlExecutionFeedback.success ? (
+                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                              ) : (
+                                <ShieldAlert className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                              )}
+                              <span>{sqlExecutionFeedback.success ? "EXECUTION SUCCESS" : "DATABASE EXECUTION FAILED"}</span>
+                            </div>
+                            <p>{sqlExecutionFeedback.message}</p>
+                            {sqlExecutionFeedback.error && (
+                              <p className="opacity-90 font-mono text-[8.5px] bg-slate-950/80 p-1.5 rounded border border-rose-950/50 select-all whitespace-pre-wrap">{sqlExecutionFeedback.error}</p>
+                            )}
+                            {sqlExecutionFeedback.setupSql && (
+                              <div className="space-y-1.5 pt-1.5 border-t border-red-500/10">
+                                <span className="text-[8.5px] text-amber-400 block uppercase font-bold">Safe Execution Helper Setup (Paste once into Supabase SQL Editor):</span>
+                                <div className="relative group bg-slate-950/90 border border-slate-900 rounded p-1.5">
+                                  <pre className="text-[8.5px] text-zinc-300 overflow-x-auto select-all leading-normal max-h-32 overflow-y-auto">
+                                    {sqlExecutionFeedback.setupSql}
+                                  </pre>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(sqlExecutionFeedback.setupSql || "");
+                                    }}
+                                    className="absolute right-2 top-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-[8px] font-bold px-1.5 py-0.5 rounded text-slate-300 transition cursor-pointer"
+                                  >
+                                    Copy Script
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                         <div className="bg-slate-950 rounded-xl border border-slate-900 p-3 overflow-hidden text-left relative group">
                           <pre className="text-[9px] text-zinc-400 font-mono max-h-48 overflow-y-auto leading-relaxed select-all">
-{sqlSchemaMode === 'create' ? `-- Create WhipCheck saved vehicles table on Supabase
-create table public.vehicles (
-  id text primary key,
-  timestamp text not null,
-  image text not null,
-  "isCar" boolean default true,
-  make text,
-  model text,
-  year integer,
-  color text,
-  transmission text,
-  drivetrain text,
-  engine text,
-  power text,
-  zeroToSixty text,
-  topSpeed text,
-  curbWeight text,
-  gasConsumption text,
-  rarityScore integer,
-  productionNumbers text,
-  heritageSummary text,
-  funFact text,
-  marketValue text,
-  latitude text,
-  longitude text,
-  spotterName text,
-  rating integer,
-  comfort integer,
-  gasSatisfaction integer,
-  performanceValue integer,
-  reliability integer,
-  user_id text
-);
-
--- Create comments table on Supabase
-create table public.comments (
-  id text primary key,
-  car_id text not null,
-  author text not null,
-  text text not null,
-  timestamp text,
-  comfort integer,
-  "gasConsumption" integer,
-  performance integer,
-  reliability integer,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);` : `-- Upgrade existing tables to match latest database version
--- Run this block in your Supabase SQL Editor to resolve user_id cache warnings:
-
-alter table public.vehicles add column if not exists user_id text;
-
--- Enforces Row Level Security constraints safely
-alter table public.vehicles enable row level security;
-alter table public.comments enable row level security;`}
+                            {sqlSchemaMode === 'create' ? SCHEMA_CREATE_SQL : SCHEMA_UPGRADE_SQL}
                           </pre>
                         </div>
                       </div>
@@ -5296,11 +5413,35 @@ alter table public.comments enable row level security;`}
                           <p className="text-zinc-300">{explorerError.message}</p>
                           
                           {explorerError.requiredSql && (
-                            <div className="space-y-1.5 flex flex-col pt-1">
-                              <span className="text-[8.5px] uppercase font-bold text-red-400 block font-mono">Required SQL to auto-create missing table:</span>
-                              <pre className="p-2 bg-black border border-red-950/45 rounded-lg text-[8.5px] text-red-400 overflow-x-auto select-all max-h-40 line-clamp-4 leading-normal font-mono">
+                            <div className="space-y-1.5 flex flex-col pt-1.5 border-t border-red-500/10">
+                              <span className="text-[8.5px] uppercase font-bold text-red-400 block font-mono">Required Schema Script definitions:</span>
+                              <pre className="p-2 bg-black border border-red-950/45 rounded-lg text-[8px] text-red-400 overflow-x-auto select-all max-h-40 overflow-y-auto leading-normal font-mono select-all">
                                 {explorerError.requiredSql}
                               </pre>
+
+                              <button
+                                type="button"
+                                disabled={isApplyingSql || !isSupabaseConfigured()}
+                                onClick={async () => {
+                                  await handleApplySqlDirectly(explorerError.requiredSql);
+                                  // Clear error and trigger snapshot re-fetch
+                                  setExplorerError(null);
+                                  fetchExplorerRows(explorerTable);
+                                }}
+                                className="mt-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-600/25 border border-emerald-500/40 text-emerald-400 transition cursor-pointer select-none font-sans font-black text-[9px] uppercase active:scale-[0.99] disabled:opacity-50"
+                              >
+                                {isApplyingSql ? (
+                                  <>
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    <span>RUNNING REPAIR DIRECTLY ON DATABASE...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Database className="h-3.5 w-3.5 text-emerald-400 animate-pulse" />
+                                    <span>🚀 INTERACTION POINT: APPLY DIRECTLY TO FIX TABLE</span>
+                                  </>
+                                )}
+                              </button>
                             </div>
                           )}
 
@@ -5755,490 +5896,14 @@ alter table public.comments enable row level security;`}
                   )}
 
                   {adminSubTab === 'localstorage' && (
-                    <div className="space-y-4 animate-fade-in text-left">
-                      <div className="flex items-center justify-between">
-                        <div className="space-y-0.5">
-                          <h4 className="text-[10px] font-bold text-slate-300 uppercase font-mono tracking-wide">📂 Browser Local Storage Inspector</h4>
-                          <p className="text-[9.5px] text-zinc-500 leading-normal">Inspect, search, and live edit physical key-value objects stored inside your web browser.</p>
-                        </div>
-
-                        <div className="flex gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={refreshLocalStorage}
-                            className="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400 hover:text-slate-200 font-mono text-[9px] uppercase flex items-center gap-1.5 cursor-pointer transition select-none"
-                          >
-                            <RefreshCw className="h-3 w-3" />
-                            <span>Reload</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Search & Filter bar */}
-                      <div className="space-y-2">
-                        <div className="relative">
-                          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-zinc-600" />
-                          <input
-                            type="text"
-                            placeholder="Filter keys..."
-                            value={localStorageSearch}
-                            onChange={(e) => setLocalStorageSearch(e.target.value)}
-                            className="w-full bg-slate-950 border border-slate-900 rounded-lg pl-8 pr-3 py-1.5 text-[10px] text-slate-300 focus:outline-none focus:border-red-500/55 transition font-mono focus:ring-1 focus:ring-red-500/25"
-                          />
-                        </div>
-
-                        <div className="flex flex-wrap gap-1 font-mono text-[8.5px]">
-                          <button
-                            type="button"
-                            onClick={() => setLocalStorageFilter('all')}
-                            className={`px-2 py-0.75 rounded border transition cursor-pointer ${
-                              localStorageFilter === 'all'
-                                ? 'bg-red-500/10 text-red-400 border-red-500/30 font-bold'
-                                : 'bg-slate-950 border-slate-900 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            All ({localStorageItems.length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLocalStorageFilter('garage')}
-                            className={`px-2 py-0.75 rounded border transition cursor-pointer ${
-                              localStorageFilter === 'garage'
-                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 font-bold'
-                                : 'bg-slate-950 border-slate-900 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            Garage ({localStorageItems.filter(item => item.key.includes('car_spotter_garage')).length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLocalStorageFilter('comments')}
-                            className={`px-2 py-0.75 rounded border transition cursor-pointer ${
-                              localStorageFilter === 'comments'
-                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 font-bold'
-                                : 'bg-slate-950 border-slate-900 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            Comments ({localStorageItems.filter(item => item.key.includes('comments')).length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLocalStorageFilter('auth')}
-                            className={`px-2 py-0.75 rounded border transition cursor-pointer ${
-                              localStorageFilter === 'auth'
-                                ? 'bg-teal-500/10 text-teal-400 border-teal-500/30 font-bold'
-                                : 'bg-slate-950 border-slate-900 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            Auth/Session ({localStorageItems.filter(item => item.key.includes('session') || item.key.includes('spotter_name')).length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLocalStorageFilter('other')}
-                            className={`px-2 py-0.75 rounded border transition cursor-pointer ${
-                              localStorageFilter === 'other'
-                                ? 'bg-zinc-500/10 text-zinc-400 border-zinc-500/30 font-bold'
-                                : 'bg-slate-950 border-slate-900 text-slate-400 hover:text-slate-200'
-                            }`}
-                          >
-                            Other ({localStorageItems.filter(item => 
-                              !item.key.includes('car_spotter_garage') && 
-                              !item.key.includes('comments') && 
-                              !item.key.includes('session') && 
-                              !item.key.includes('spotter_name')
-                            ).length})
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Display Alert / Help */}
-                      {localStorageSuccessMessage && (
-                        <div className="p-2.5 bg-emerald-950/40 border border-emerald-500/20 rounded-xl text-emerald-400 text-[10px] leading-snug font-mono flex items-center gap-2 animate-fade-in">
-                          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-450" />
-                          <span>{localStorageSuccessMessage}</span>
-                        </div>
-                      )}
-
-                      {localStorageErrorMessage && (
-                        <div className="p-2.5 bg-red-950/40 border border-red-500/20 rounded-xl text-red-400 text-[10px] leading-snug font-mono flex items-center gap-2 animate-fade-in">
-                          <ShieldAlert className="h-4 w-4 shrink-0 text-red-450" />
-                          <span>{localStorageErrorMessage}</span>
-                        </div>
-                      )}
-
-                      {/* Dual Pane Layout */}
-                      <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-                        {/* Keys column - 2 cols span */}
-                        <div className="md:col-span-2 space-y-1.5">
-                          <span className="text-[8.5px] uppercase font-mono text-zinc-500 block font-bold leading-none pl-1">Data Key Registry</span>
-                          
-                          <div className="max-h-[320px] overflow-y-auto border border-slate-900 bg-slate-950/80 rounded-xl p-1.5 space-y-1">
-                            {localStorageItems
-                              .filter(item => {
-                                // Apply search query
-                                if (localStorageSearch && !item.key.toLowerCase().includes(localStorageSearch.toLowerCase())) {
-                                  return false;
-                                }
-                                // Apply category filter
-                                if (localStorageFilter === 'garage') {
-                                  return item.key.includes('car_spotter_garage');
-                                }
-                                if (localStorageFilter === 'comments') {
-                                  return item.key.includes('comments');
-                                }
-                                if (localStorageFilter === 'auth') {
-                                  return item.key.includes('session') || item.key.includes('spotter_name');
-                                }
-                                if (localStorageFilter === 'other') {
-                                  return (
-                                    !item.key.includes('car_spotter_garage') && 
-                                    !item.key.includes('comments') && 
-                                    !item.key.includes('session') && 
-                                    !item.key.includes('spotter_name')
-                                  );
-                                }
-                                return true;
-                              })
-                              .map(item => {
-                                const is_garage = item.key.includes('car_spotter_garage');
-                                const is_comments = item.key.includes('comments');
-                                const is_auth = item.key.includes('session') || item.key.includes('spotter_name');
-                                
-                                let badgeColor = 'text-zinc-500 bg-zinc-950 border-zinc-900/60';
-                                let badgeLabel = 'Misc';
-                                if (is_garage) { badgeColor = 'text-emerald-400 bg-emerald-950/20 border-emerald-500/20'; badgeLabel = 'Garage'; }
-                                else if (is_comments) { badgeColor = 'text-amber-400 bg-amber-950/20 border-amber-500/20'; badgeLabel = 'Review'; }
-                                else if (is_auth) { badgeColor = 'text-teal-400 bg-teal-950/20 border-teal-500/20'; badgeLabel = 'Auth'; }
-
-                                return (
-                                  <button
-                                    key={item.key}
-                                    type="button"
-                                    onClick={() => {
-                                      setSelectedLocalStorageKey(item.key);
-                                      setSelectedLocalStorageValue(item.value);
-                                      setIsEditingLocalStorage(false);
-                                      setLocalStorageSuccessMessage(null);
-                                      setLocalStorageErrorMessage(null);
-                                      setShowKeyDeleteConfirm(false);
-                                    }}
-                                    className={`w-full text-left p-2 rounded-lg font-mono text-[9px] border transition flex flex-col gap-1 cursor-pointer select-none ${
-                                      selectedLocalStorageKey === item.key
-                                        ? 'bg-red-500/10 border-red-500/30'
-                                        : 'bg-black/40 border-slate-900 hover:bg-slate-900/40'
-                                    }`}
-                                  >
-                                    <div className="flex items-start justify-between gap-1 w-full">
-                                      <span className="truncate break-all font-bold text-slate-300 pr-1 leading-normal">
-                                        {item.key}
-                                      </span>
-                                      <span className={`px-1 py-0.25 text-[7px] uppercase font-bold rounded border shrink-0 ${badgeColor}`}>
-                                        {badgeLabel}
-                                      </span>
-                                    </div>
-                                    <span className="text-zinc-500 text-[8px] truncate leading-none">
-                                      Size: {(item.value.length / 1024).toFixed(3)} KB ({item.value.length} chars)
-                                    </span>
-                                  </button>
-                                );
-                              })}
-
-                            {localStorageItems.length === 0 && (
-                              <p className="p-4 text-[10px] text-zinc-650 italic text-center font-mono">No keys exist in target window.</p>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Inspector details panel - 3 cols span */}
-                        <div className="md:col-span-3 space-y-1.5 flex flex-col">
-                          <span className="text-[8.5px] uppercase font-mono text-zinc-500 block font-bold leading-none pl-1">Selected Payload Details</span>
-                          
-                          {selectedLocalStorageKey ? (
-                            <div className="border border-slate-900 bg-slate-950 p-3 rounded-xl space-y-3 flex flex-col flex-grow">
-                              <div className="flex items-start justify-between gap-3 border-b border-slate-900 pb-2">
-                                <div className="space-y-0.5 max-w-[200px]">
-                                  <span className="text-[7.5px] uppercase font-mono text-rose-500 block font-black">Registry Entry key</span>
-                                  <h5 className="text-[9.5px] font-bold text-slate-205 font-mono break-all line-clamp-2 select-all">{selectedLocalStorageKey}</h5>
-                                </div>
-
-                                <div className="flex gap-1 shrink-0">
-                                  {/* Copy button */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      navigator.clipboard.writeText(selectedLocalStorageValue);
-                                      setLocalStorageCopiedKey(selectedLocalStorageKey);
-                                      setTimeout(() => setLocalStorageCopiedKey(null), 2000);
-                                    }}
-                                    className="p-1 px-2 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-450 hover:text-white transition cursor-pointer font-mono text-[8px] uppercase flex items-center gap-1"
-                                    title="Copy Value"
-                                  >
-                                    {localStorageCopiedKey === selectedLocalStorageKey ? (
-                                      <>
-                                        <Check className="h-3 w-3 text-emerald-400" />
-                                        <span className="text-emerald-400">Copied</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="h-3 w-3" />
-                                        <span>Copy</span>
-                                      </>
-                                    )}
-                                  </button>
-
-                                  {/* Delete single key */}
-                                  {showKeyDeleteConfirm ? (
-                                    <div className="flex items-center gap-1.5 animate-fade-in shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          localStorage.removeItem(selectedLocalStorageKey);
-                                          setSelectedLocalStorageKey(null);
-                                          setSelectedLocalStorageValue("");
-                                          setIsEditingLocalStorage(false);
-                                          setShowKeyDeleteConfirm(false);
-                                          refreshLocalStorage();
-                                          setLocalStorageSuccessMessage("Key successfully removed from the browser local registry!");
-                                        }}
-                                        className="p-1 px-2 rounded-lg bg-red-650 hover:bg-red-600 text-white font-mono text-[8.5px] font-bold uppercase transition cursor-pointer"
-                                      >
-                                        Delete Yes!
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => setShowKeyDeleteConfirm(false)}
-                                        className="p-1 px-2 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 text-[8.5px] uppercase font-mono transition cursor-pointer"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => setShowKeyDeleteConfirm(true)}
-                                      className="p-1 px-1.5 rounded-lg bg-red-950/20 hover:bg-red-950/40 border border-red-900/40 text-red-400 hover:text-red-200 transition cursor-pointer"
-                                      title="Delete Key"
-                                    >
-                                      <Trash2 className="h-3 w-3" />
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-
-                              {/* Value Display or Editor */}
-                              <div className="flex-grow flex flex-col space-y-2">
-                                <div className="flex items-center justify-between font-mono text-[8.5px]">
-                                  <span className="text-zinc-550 uppercase font-bold">Value Payload:</span>
-                                  {!isEditingLocalStorage ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setIsEditingLocalStorage(true);
-                                        setSelectedLocalStorageValue(localStorage.getItem(selectedLocalStorageKey || "") || "");
-                                      }}
-                                      className="text-red-450 hover:text-red-350 font-bold uppercase transition"
-                                    >
-                                      📝 Edit Raw Payload
-                                    </button>
-                                  ) : (
-                                    <div className="flex gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setIsEditingLocalStorage(false);
-                                          setSelectedLocalStorageValue(localStorage.getItem(selectedLocalStorageKey || "") || "");
-                                        }}
-                                        className="text-zinc-500 hover:text-zinc-300 transition"
-                                      >
-                                        Cancel
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          try {
-                                            // Save the value
-                                            localStorage.setItem(selectedLocalStorageKey, selectedLocalStorageValue);
-                                            setIsEditingLocalStorage(false);
-                                            refreshLocalStorage();
-                                            setLocalStorageSuccessMessage("Successfully edited key value!");
-                                            // Handle live update
-                                            if (selectedLocalStorageKey === getGarageStorageKey(currentUser)) {
-                                              try {
-                                                const loaded = JSON.parse(selectedLocalStorageValue);
-                                                if (Array.isArray(loaded)) {
-                                                  setGarage(loaded);
-                                                }
-                                              } catch (ge) {}
-                                            }
-                                          } catch (err: any) {
-                                            setLocalStorageErrorMessage("Failed to save edited payload: " + err.message);
-                                          }
-                                        }}
-                                        className="text-emerald-400 hover:text-emerald-300 font-bold uppercase transition"
-                                      >
-                                        Save Changes
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {isEditingLocalStorage ? (
-                                  <textarea
-                                    value={selectedLocalStorageValue}
-                                    onChange={(e) => setSelectedLocalStorageValue(e.target.value)}
-                                    className="w-full h-44 bg-black border border-slate-800 rounded-lg p-2 font-mono text-[9px] text-zinc-300 focus:outline-none focus:border-red-500/55 resize-none leading-normal"
-                                    placeholder="Enter string representation or valid JSON payload..."
-                                  />
-                                ) : (
-                                  <div className="w-full bg-black border border-slate-900 rounded-lg p-2.5 max-h-[220px] overflow-auto">
-                                    <pre className="font-mono text-[9px] whitespace-pre-wrap word-break text-zinc-350 select-all leading-relaxed tab-size-2">
-                                      {getPrettifiedJson(selectedLocalStorageValue)}
-                                    </pre>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Help Instructions context aware inside panel */}
-                              <div className="bg-slate-900/40 p-2.5 rounded-lg border border-slate-900/60 leading-normal text-[8.5px] text-zinc-500 font-sans">
-                                <span className="font-bold text-zinc-400 block uppercase text-[8px] font-mono tracking-wide mb-0.5">💡 Spotter Tip:</span>
-                                {selectedLocalStorageKey.includes('car_comments') ? (
-                                  <p>
-                                    This key holds reviews and local test comments written on vehicle ID <strong>{selectedLocalStorageKey.replace('car_comments_', '')}</strong>. Sourced and saved when not logged in to database pools.
-                                  </p>
-                                ) : selectedLocalStorageKey.startsWith('car_spotter_garage_v2') ? (
-                                  <p>
-                                    This key hosts garage vehicles synced to the spotter session key. Modifying this JSON changes active items instantly in your catalog.
-                                  </p>
-                                ) : (
-                                  <p>
-                                    This is a system configuration key used to speed up operations and ensure state durability within browser boundaries.
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="border border-slate-900/60 bg-black/25 flex flex-col items-center justify-center py-16 px-4 rounded-xl text-center flex-grow">
-                              <Layers className="h-7 w-7 text-zinc-700 animate-pulse mb-2" />
-                              <h5 className="font-mono text-[10px] text-zinc-500 font-bold uppercase tracking-wider">No keys selected</h5>
-                              <p className="text-[9.5px] text-zinc-600 max-w-xs leading-normal mt-1 font-sans">
-                                Select any stored element from the left-hand listing to preview formatted entries, inspect sizes, copy payloads, or make instant JSON state alterations.
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* CLEAR ALL LOCAL STORAGE WIPE ACTION */}
-                      <div className="pt-3 border-t border-slate-900 space-y-2.5">
-                        <div className="space-y-0.5">
-                          <h4 className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wide">⚙️ Registry Maintenance Utilities</h4>
-                          <p className="text-[9.5px] text-zinc-500 leading-normal">Safely clear storage parameters to test native clean-slate onboard behaviors.</p>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div className="flex flex-col gap-1">
-                            {!showClearCommentsConfirm ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowClearCommentsConfirm(true);
-                                  setShowFormatConfirm(false);
-                                  setLocalStorageSuccessMessage(null);
-                                  setLocalStorageErrorMessage(null);
-                                }}
-                                className="py-2.5 px-3 rounded-lg bg-orange-950/20 hover:bg-orange-950/30 border border-orange-900/40 text-[9.5px] font-bold text-orange-200 transition cursor-pointer text-center uppercase tracking-wide"
-                              >
-                                🧹 Clear comments local cache Only
-                              </button>
-                            ) : (
-                              <div className="flex flex-col gap-1.5 p-2 bg-orange-950/15 border border-orange-500/20 rounded-xl animate-fade-in text-center font-mono">
-                                <span className="text-[9px] font-bold text-orange-400">Targeting {localStorageItems.filter(v => v.key.startsWith('car_comments_') || v.key.startsWith('compare_comments_')).length} cache keys. Proceed?</span>
-                                <div className="grid grid-cols-2 gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      let count = 0;
-                                      const keysToRemove: string[] = [];
-                                      for (let i = 0; i < localStorage.length; i++) {
-                                        const key = localStorage.key(i);
-                                        if (key && (key.startsWith('car_comments_') || key.startsWith('compare_comments_'))) {
-                                          keysToRemove.push(key);
-                                        }
-                                      }
-                                      keysToRemove.forEach(k => {
-                                        localStorage.removeItem(k);
-                                        count++;
-                                      });
-                                      setSelectedLocalStorageKey(null);
-                                      setSelectedLocalStorageValue("");
-                                      setShowClearCommentsConfirm(false);
-                                      refreshLocalStorage();
-                                      setLocalStorageSuccessMessage(`Comments wiped. Cleaned up ${count} local keys successfully!`);
-                                    }}
-                                    className="py-1 bg-orange-600 hover:bg-orange-500 text-black text-[9px] font-black rounded-lg cursor-pointer uppercase"
-                                  >
-                                    Confirm WIPE
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setShowClearCommentsConfirm(false)}
-                                    className="py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 text-[9px] font-bold rounded-lg cursor-pointer uppercase border border-slate-850"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            {!showFormatConfirm ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowFormatConfirm(true);
-                                  setShowClearCommentsConfirm(false);
-                                  setLocalStorageSuccessMessage(null);
-                                  setLocalStorageErrorMessage(null);
-                                }}
-                                className="py-2.5 px-3 rounded-lg bg-red-950/20 hover:bg-red-950/30 border border-red-900/40 text-[9.5px] font-bold text-red-200 transition cursor-pointer text-center uppercase tracking-wide"
-                              >
-                                🚨 Format Browser Local Persistence
-                              </button>
-                            ) : (
-                              <div className="flex flex-col gap-1.5 p-2 bg-red-950/20 border border-red-500/25 rounded-xl animate-fade-in text-center font-mono">
-                                <span className="text-[9px] font-bold text-red-400">Total deletion of ALL saved garages & reviews!</span>
-                                <div className="grid grid-cols-2 gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      localStorage.clear();
-                                      updateSupabaseConfig("", "");
-                                      setSelectedLocalStorageKey(null);
-                                      setSelectedLocalStorageValue("");
-                                      setShowFormatConfirm(false);
-                                      refreshLocalStorage();
-                                      setLocalStorageSuccessMessage("Browser registry formatted. Reloading session...");
-                                      setTimeout(() => window.location.reload(), 1500);
-                                    }}
-                                    className="py-1 bg-red-650 hover:bg-red-600 text-white text-[9px] font-black rounded-lg cursor-pointer uppercase"
-                                  >
-                                    Format All!
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setShowFormatConfirm(false)}
-                                    className="py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 text-[9px] font-bold rounded-lg cursor-pointer uppercase border border-slate-850"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
+                    <div className="p-4 bg-slate-950 border border-slate-900 rounded-xl font-mono text-xs text-slate-400 text-center">
+                      <span>Browser local storage inspection is retired for production migration. Relying entirely on Supabase schemas.</span>
                     </div>
+                  )}
+
+                  {/* RETIRED LOCAL STORAGE INSPECTOR INTERFACE */}
+                  {false && (
+                    <div className="hidden" />
                   )}
 
                   {adminSubTab === 'supabase_wipe' && (
@@ -6461,15 +6126,17 @@ alter table public.comments enable row level security;`}
           <div className="flex justify-around items-center max-w-md mx-auto">
             
             {/* Nav item 1 (Dashboard) */}
-            <button
-              onClick={() => { setActiveTab('dashboard'); setSelectedGarageCar(null); }}
-              className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'dashboard' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
-            >
-              <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'dashboard' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
-                <Compass className="h-4 w-4" />
-              </div>
-              <span className="text-[9px] font-mono uppercase tracking-widest font-semibold text-center">Dashboard</span>
-            </button>
+            {currentUser && (
+              <button
+                onClick={() => { setActiveTab('dashboard'); setSelectedGarageCar(null); }}
+                className={`flex flex-col items-center gap-1 transition-all cursor-pointer ${activeTab === 'dashboard' ? `${activeTheme.accentText} opacity-100 scale-105` : 'text-slate-500 hover:text-slate-200'}`}
+              >
+                <div className={`p-1.5 rounded-full border transition-colors ${activeTab === 'dashboard' ? `${activeTheme.accentBorder} bg-white/5` : 'border-transparent'}`}>
+                  <Compass className="h-4 w-4" />
+                </div>
+                <span className="text-[9px] font-mono uppercase tracking-widest font-semibold text-center">Dashboard</span>
+              </button>
+            )}
 
             {/* Nav item 2 (Center Big Button) */}
             <button
@@ -6536,14 +6203,14 @@ alter table public.comments enable row level security;`}
                 <div className="space-y-0.5">
                   <div className="flex justify-between items-center text-[7px] text-zinc-500 font-mono tracking-wide">
                     <span>Scan usage limit</span>
-                    <span>{scansCountUsed} / {selectedPlanTier === 'chiptuning' ? 3 : 15} used</span>
+                    <span>{sessionScansUsed} / {selectedPlanTier === 'chiptuning' ? 3 : 15} used</span>
                   </div>
                   <div className="w-full h-1 bg-slate-950/80 rounded-full border border-slate-900 overflow-hidden">
                     <div 
                       className={`h-full transition-all duration-500 ${
                         selectedPlanTier === 'chiptuning' ? 'bg-zinc-500' : 'bg-indigo-500'
                       }`}
-                      style={{ width: `${Math.min(100, (scansCountUsed / (selectedPlanTier === 'chiptuning' ? 3 : 15)) * 100)}%` }}
+                      style={{ width: `${Math.min(100, (sessionScansUsed / (selectedPlanTier === 'chiptuning' ? 3 : 15)) * 100)}%` }}
                     ></div>
                   </div>
                 </div>
