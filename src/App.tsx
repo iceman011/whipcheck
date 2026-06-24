@@ -976,18 +976,19 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
 
   // Subscription action logic
   const handleOpenPlans = (tier?: 'chiptuning' | 'teen_passion' | 'gasoline_gold') => {
+    setActivePlanSelection(tier || selectedPlanTier);
+    setShowSubscriptionModal(true);
+  };
+
+  const handleSelectPlan = (tier: 'chiptuning' | 'teen_passion' | 'gasoline_gold') => {
     if (!currentUser) {
+      setShowSubscriptionModal(false);
       setAuthFormMode('signup');
       setActiveTab('account');
       setAuthMessage("💡 Register a free account first to access WhipCheck membership subscription plans!");
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    setActivePlanSelection(tier || selectedPlanTier);
-    setShowSubscriptionModal(true);
-  };
-
-  const handleSelectPlan = (tier: 'chiptuning' | 'teen_passion' | 'gasoline_gold') => {
     setActivePlanSelection(tier);
     if (tier === 'chiptuning') {
       localStorage.setItem("whipcheck_subscription_tier", 'chiptuning');
@@ -3034,60 +3035,72 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
 
             {/* Premium subscription active badge & scan counters */}
             <div className="flex flex-col items-end gap-1.5 select-none">
-              {(() => {
-                if (selectedPlanTier === 'gasoline_gold') {
-                  return (
-                    <div 
-                      onClick={() => handleOpenPlans('gasoline_gold')}
-                      className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 rounded border border-amber-300 shadow-md shadow-amber-950/45 shrink-0"
-                    >
-                      <Sparkles className="h-2.5 w-2.5 text-slate-900" />
-                      <span className="text-[7.5px] font-mono font-black text-slate-900 tracking-wide">GOLD CO-PILOT</span>
+              {currentUser ? (
+                <>
+                  {(() => {
+                    if (selectedPlanTier === 'gasoline_gold') {
+                      return (
+                        <div 
+                          onClick={() => handleOpenPlans('gasoline_gold')}
+                          className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 rounded border border-amber-300 shadow-md shadow-amber-950/45 shrink-0"
+                        >
+                          <Sparkles className="h-2.5 w-2.5 text-slate-900" />
+                          <span className="text-[7.5px] font-mono font-black text-slate-900 tracking-wide">GOLD CO-PILOT</span>
+                        </div>
+                      );
+                    }
+                    if (selectedPlanTier === 'teen_passion') {
+                      return (
+                        <div 
+                          onClick={() => handleOpenPlans('teen_passion')}
+                          className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded border border-indigo-400 shadow-md shadow-indigo-950/45 shrink-0"
+                        >
+                          <Gauge className="h-2.5 w-2.5 text-white" />
+                          <span className="text-[7.5px] font-mono font-black text-white tracking-wide">TEEN PASSION</span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div 
+                        onClick={() => handleOpenPlans('chiptuning')}
+                        className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-slate-800 hover:bg-slate-750 rounded border border-slate-700 hover:border-indigo-500 transition-all text-slate-350 shrink-0"
+                      >
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></span>
+                        <span className="text-[7.5px] font-mono font-bold tracking-wide">FREE TIER 🔒</span>
+                      </div>
+                    );
+                  })()}
+                  
+                  <div className="text-[8px] font-mono space-y-0.5 tracking-tight text-right text-zinc-400">
+                    <div>
+                      <span className="text-[7px] text-zinc-500 uppercase">Scans: </span>
+                      {selectedPlanTier === 'chiptuning' && <span className="font-bold text-emerald-400">{Math.max(0, 3 - sessionScansUsed)}/3 rmn</span>}
+                      {selectedPlanTier === 'teen_passion' && <span className="font-bold text-indigo-400">{Math.max(0, 15 - sessionScansUsed)}/15 rmn</span>}
+                      {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
                     </div>
-                  );
-                }
-                if (selectedPlanTier === 'teen_passion') {
-                  return (
-                    <div 
-                      onClick={() => handleOpenPlans('teen_passion')}
-                      className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded border border-indigo-400 shadow-md shadow-indigo-950/45 shrink-0"
-                    >
-                      <Gauge className="h-2.5 w-2.5 text-white" />
-                      <span className="text-[7.5px] font-mono font-black text-white tracking-wide">TEEN PASSION</span>
+                    <div>
+                      <span className="text-[7px] text-zinc-500 uppercase">Garage: </span>
+                      {selectedPlanTier === 'chiptuning' && <span className="font-bold text-slate-300">{garage.length}/3 slot</span>}
+                      {selectedPlanTier === 'teen_passion' && <span className="font-bold text-slate-300">{garage.length}/15 slot</span>}
+                      {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
                     </div>
-                  );
-                }
-                return (
-                  <div 
-                    onClick={() => handleOpenPlans('chiptuning')}
-                    className="cursor-pointer flex items-center gap-1 px-2 py-0.5 bg-slate-800 hover:bg-slate-750 rounded border border-slate-700 hover:border-indigo-500 transition-all text-slate-350 shrink-0"
-                  >
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></span>
-                    <span className="text-[7.5px] font-mono font-bold tracking-wide">FREE TIER 🔒</span>
+                    <div>
+                      <span className="text-[7px] text-zinc-500 uppercase">Compare: </span>
+                      {selectedPlanTier === 'chiptuning' && <span className="font-semibold text-red-400">Locked 🔒</span>}
+                      {selectedPlanTier === 'teen_passion' && <span className="font-bold text-teal-400">{compareList.length}/2 max</span>}
+                      {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ {compareList.length}/3 max</span>}
+                    </div>
                   </div>
-                );
-              })()}
-              
-              <div className="text-[8px] font-mono space-y-0.5 tracking-tight text-right text-zinc-400">
-                <div>
-                  <span className="text-[7px] text-zinc-500 uppercase">Scans: </span>
-                  {selectedPlanTier === 'chiptuning' && <span className="font-bold text-emerald-400">{Math.max(0, 3 - sessionScansUsed)}/3 rmn</span>}
-                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-indigo-400">{Math.max(0, 15 - sessionScansUsed)}/15 rmn</span>}
-                  {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
-                </div>
-                <div>
-                  <span className="text-[7px] text-zinc-500 uppercase">Garage: </span>
-                  {selectedPlanTier === 'chiptuning' && <span className="font-bold text-slate-300">{garage.length}/3 slot</span>}
-                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-slate-300">{garage.length}/15 slot</span>}
-                  {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ Unlim ♾️</span>}
-                </div>
-                <div>
-                  <span className="text-[7px] text-zinc-500 uppercase">Compare: </span>
-                  {selectedPlanTier === 'chiptuning' && <span className="font-semibold text-red-400">Locked 🔒</span>}
-                  {selectedPlanTier === 'teen_passion' && <span className="font-bold text-teal-400">{compareList.length}/2 max</span>}
-                  {selectedPlanTier === 'gasoline_gold' && <span className="font-bold text-amber-400">⚡ {compareList.length}/3 max</span>}
-                </div>
-              </div>
+                </>
+              ) : (
+                <button
+                  onClick={() => handleOpenPlans()}
+                  className="px-2.5 py-1.5 bg-gradient-to-r from-indigo-650 to-indigo-550 hover:from-indigo-600 hover:to-indigo-500 text-white font-bold font-mono text-[9px] uppercase tracking-wider rounded-lg border border-indigo-500/20 transition-all cursor-pointer shadow-md shrink-0 flex items-center gap-1"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  <span>View Plans</span>
+                </button>
+              )}
             </div>
           </div>
         </header>
@@ -4159,33 +4172,35 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
               </div>
 
               {/* Premium Membership summary panel inside Account */}
-              <div className="p-4 bg-slate-900/60 border border-slate-850 rounded-2xl relative overflow-hidden space-y-3 font-sans">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
-                      <Sparkles className="h-4 w-4" />
+              {currentUser && (
+                <div className="p-4 bg-slate-900/60 border border-slate-850 rounded-2xl relative overflow-hidden space-y-3 font-sans">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
+                        <Sparkles className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">WhipCheck Membership</h3>
+                        <p className="text-[10px] text-zinc-500 font-mono uppercase font-bold mt-0.5">
+                          Tier Level: <span className="text-indigo-400">{selectedPlanTier.replace("_", " ").toUpperCase()}</span>
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-xs font-black uppercase text-slate-200 tracking-wider font-mono">WhipCheck Membership</h3>
-                      <p className="text-[10px] text-zinc-500 font-mono uppercase font-bold mt-0.5">
-                        Tier Level: <span className="text-indigo-400">{selectedPlanTier.replace("_", " ").toUpperCase()}</span>
-                      </p>
-                    </div>
+                    <button 
+                      onClick={() => handleOpenPlans()}
+                      className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 font-bold font-mono text-[9.5px] uppercase tracking-wider text-white rounded-lg transition shrink-0 cursor-pointer"
+                    >
+                      Manage plans
+                    </button>
                   </div>
-                  <button 
-                    onClick={() => handleOpenPlans()}
-                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 font-bold font-mono text-[9.5px] uppercase tracking-wider text-white rounded-lg transition shrink-0 cursor-pointer"
-                  >
-                    Manage plans
-                  </button>
+                  
+                  {selectedPlanTier !== 'chiptuning' && (
+                    <div className="text-[10px] text-emerald-400 font-mono flex items-center gap-1.5 uppercase font-bold pt-0.5">
+                      <ShieldCheck className="h-4 w-4 text-emerald-450" /> Parent Approved License Active
+                    </div>
+                  )}
                 </div>
-                
-                {selectedPlanTier !== 'chiptuning' && (
-                  <div className="text-[10px] text-emerald-400 font-mono flex items-center gap-1.5 uppercase font-bold pt-0.5">
-                    <ShieldCheck className="h-4 w-4 text-emerald-450" /> Parent Approved License Active
-                  </div>
-                )}
-              </div>
+              )}
 
               {!currentUser ? (
                 /* CASE: USER LOGGED OUT - show custom credentials sign in or sign up or OTP */
@@ -6183,47 +6198,62 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
 
           {/* Active plan highlighted name at footer bottom */}
           <div className="mt-2 text-center text-[7.5px] font-mono tracking-widest uppercase border-t border-slate-900/60 pt-1.5 flex flex-col gap-1.5 text-slate-500">
-            <div className="flex items-center justify-center gap-1">
-              <span>Membership:</span>
-              {selectedPlanTier === 'chiptuning' && <span className="text-zinc-400 font-bold">Chiptuning Free</span>}
-              {selectedPlanTier === 'teen_passion' && <span className="text-indigo-400 font-extrabold font-mono">Teen Passion Active ⚡</span>}
-              {selectedPlanTier === 'gasoline_gold' && <span className="text-amber-400 font-extrabold font-mono">Gasoline Gold Active 🏆</span>}
-              <span className="text-slate-700">•</span>
-              <button 
-                onClick={() => handleOpenPlans(selectedPlanTier)} 
-                className="underline text-indigo-400 hover:text-indigo-300 transition cursor-pointer font-bold font-mono"
-              >
-                Manage
-              </button>
-            </div>
-            
-            {/* Visual Scan Quota Capacity Bar */}
-            <div className="px-6 pb-1">
-              {selectedPlanTier !== 'gasoline_gold' ? (
-                <div className="space-y-0.5">
-                  <div className="flex justify-between items-center text-[7px] text-zinc-500 font-mono tracking-wide">
-                    <span>Scan usage limit</span>
-                    <span>{sessionScansUsed} / {selectedPlanTier === 'chiptuning' ? 3 : 15} used</span>
-                  </div>
-                  <div className="w-full h-1 bg-slate-950/80 rounded-full border border-slate-900 overflow-hidden">
-                    <div 
-                      className={`h-full transition-all duration-500 ${
-                        selectedPlanTier === 'chiptuning' ? 'bg-zinc-500' : 'bg-indigo-500'
-                      }`}
-                      style={{ width: `${Math.min(100, (sessionScansUsed / (selectedPlanTier === 'chiptuning' ? 3 : 15)) * 100)}%` }}
-                    ></div>
-                  </div>
+            {currentUser ? (
+              <>
+                <div className="flex items-center justify-center gap-1">
+                  <span>Membership:</span>
+                  {selectedPlanTier === 'chiptuning' && <span className="text-zinc-400 font-bold">Chiptuning Free</span>}
+                  {selectedPlanTier === 'teen_passion' && <span className="text-indigo-400 font-extrabold font-mono">Teen Passion Active ⚡</span>}
+                  {selectedPlanTier === 'gasoline_gold' && <span className="text-amber-400 font-extrabold font-mono">Gasoline Gold Active 🏆</span>}
+                  <span className="text-slate-700">•</span>
+                  <button 
+                    onClick={() => handleOpenPlans(selectedPlanTier)} 
+                    className="underline text-indigo-400 hover:text-indigo-300 transition cursor-pointer font-bold font-mono"
+                  >
+                    Manage
+                  </button>
                 </div>
-              ) : (
-                <div className="space-y-0.5">
-                  <div className="flex justify-between items-center text-[7px] text-amber-500/80 font-mono tracking-wide">
-                    <span>Scan usage limit</span>
-                    <span className="font-bold">UNLIMITED CO-PILOT ACTIVE ♾️</span>
-                  </div>
-                  <div className="w-full h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-600 rounded-full"></div>
+                
+                {/* Visual Scan Quota Capacity Bar */}
+                <div className="px-6 pb-1">
+                  {selectedPlanTier !== 'gasoline_gold' ? (
+                    <div className="space-y-0.5">
+                      <div className="flex justify-between items-center text-[7px] text-zinc-500 font-mono tracking-wide">
+                        <span>Scan usage limit</span>
+                        <span>{sessionScansUsed} / {selectedPlanTier === 'chiptuning' ? 3 : 15} used</span>
+                      </div>
+                      <div className="w-full h-1 bg-slate-950/80 rounded-full border border-slate-900 overflow-hidden">
+                        <div 
+                          className={`h-full transition-all duration-500 ${
+                            selectedPlanTier === 'chiptuning' ? 'bg-zinc-500' : 'bg-indigo-500'
+                          }`}
+                          style={{ width: `${Math.min(100, (sessionScansUsed / (selectedPlanTier === 'chiptuning' ? 3 : 15)) * 100)}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      <div className="flex justify-between items-center text-[7px] text-amber-500/80 font-mono tracking-wide">
+                        <span>Scan usage limit</span>
+                        <span className="font-bold">UNLIMITED CO-PILOT ACTIVE ♾️</span>
+                      </div>
+                      <div className="w-full h-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-600 rounded-full"></div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-center gap-1.5 py-1">
+                <span>Unlock Unlimited Scans & Livery Themes</span>
+                <span className="text-slate-700">•</span>
+                <button 
+                  onClick={() => handleOpenPlans()} 
+                  className="underline text-indigo-400 hover:text-indigo-300 transition cursor-pointer font-bold font-mono uppercase text-[8px] tracking-widest"
+                >
+                  Manage Plans
+                </button>
+              </div>
+            )}
           </div>
         </footer>
 
