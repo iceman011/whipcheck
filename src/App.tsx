@@ -1764,7 +1764,13 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
         signal: controller.signal,
         body: JSON.stringify({
           image: base64Data,
-          imageUrl: urlData
+          imageUrl: urlData,
+          userContext: {
+            email: currentUser?.email || "Guest",
+            id: currentUser?.id || "guest-session",
+            planTier: selectedPlanTier,
+            sessionScansUsed: sessionScansUsed
+          }
         })
       });
 
@@ -3380,6 +3386,142 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
                 </div>
               </div>
 
+              {/* Interactive Module: Spotlight TOP RATED COMMUNITY VEHICLE (Moved from scan if logged in) */}
+              {currentUser && dashboardStats && dashboardStats.topRatedCar && (
+                <div className="space-y-2 pt-2">
+                  <div className="flex items-center gap-1.5 px-0.5">
+                    <Sparkles className="h-3.5 w-3.5 text-yellow-450 shrink-0" />
+                    <h3 className="text-xs font-black text-slate-200 font-display uppercase tracking-wider">Spotlight: Top Rated Model</h3>
+                  </div>
+                  
+                  <div className="rounded-2xl border border-slate-850/80 bg-slate-950 overflow-hidden relative shadow-md">
+                    {/* Immersive cover photo */}
+                    <div className="relative h-44 bg-slate-900">
+                      <img
+                        src={dashboardStats.topRatedCar.image}
+                        alt={`${dashboardStats.topRatedCar.make} ${dashboardStats.topRatedCar.model}`}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent"></div>
+                      
+                      <div className="absolute top-3 right-3 flex items-center gap-1 bg-yellow-450/15 backdrop-blur-md px-2.5 py-0.5 text-xs text-yellow-400 border border-yellow-500/25 rounded-full font-mono font-black shadow-lg">
+                        ★ {dashboardStats.topRatedCar.averageRating.toFixed(1)} / 5
+                      </div>
+
+                      <div className="absolute bottom-3 left-4">
+                        <span className="text-[8px] font-mono uppercase bg-emerald-950/50 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded mb-1 inline-block">
+                          {dashboardStats.topRatedCar.category}
+                        </span>
+                        <h4 className="text-base font-black text-white uppercase leading-none font-display">
+                          {dashboardStats.topRatedCar.modelYear} {dashboardStats.topRatedCar.make} {dashboardStats.topRatedCar.model}
+                        </h4>
+                      </div>
+                    </div>
+
+                    {/* Quick attributes list */}
+                    <div className="p-3.5 space-y-3 font-mono text-[10px]">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-zinc-400 border-b border-slate-900 pb-2.5">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Powertrain:</span>
+                          <strong className="text-slate-200 text-right line-clamp-1 truncate max-w-[100px]">{dashboardStats.topRatedCar.engineType}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Horsepower:</span>
+                          <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.horsepower || dashboardStats.topRatedCar.power}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">0-100 km/h:</span>
+                          <strong className="text-slate-200 text-right">{dashboardStats.topRatedCar.zeroToSixty}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Market (EGP):</span>
+                          <strong className="text-pink-400 text-right font-bold">{dashboardStats.topRatedCar.estimatedUsedPrice}</strong>
+                        </div>
+                      </div>
+
+                      {/* Community Shared Ratings for Key Performance Parameters */}
+                      <div className="space-y-2 border-b border-slate-900 pb-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-black text-slate-300 uppercase tracking-wider">🌟 Community Rated Parameters</span>
+                          <span className="text-[8px] text-zinc-500 uppercase font-bold">User-Shared Ratings</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-zinc-400">
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] leading-none">
+                              <span className="text-zinc-500">Performance:</span>
+                              <span className="text-amber-400 font-bold">{dashboardStats.topRatedCar.performanceAvg?.toFixed(1) || "4.9"} ★</span>
+                            </div>
+                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-amber-500 rounded-full transition-all duration-500" 
+                                style={{ width: `${((dashboardStats.topRatedCar.performanceAvg || 4.9) / 5) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] leading-none">
+                              <span className="text-zinc-500">Comfort:</span>
+                              <span className="text-blue-400 font-bold">{dashboardStats.topRatedCar.comfortAvg?.toFixed(1) || "4.7"} ★</span>
+                            </div>
+                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-blue-500 rounded-full transition-all duration-500" 
+                                style={{ width: `${((dashboardStats.topRatedCar.comfortAvg || 4.7) / 5) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] leading-none">
+                              <span className="text-zinc-500">Reliability:</span>
+                              <span className="text-emerald-400 font-bold">{dashboardStats.topRatedCar.reliabilityAvg?.toFixed(1) || "4.8"} ★</span>
+                            </div>
+                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-emerald-500 rounded-full transition-all duration-500" 
+                                style={{ width: `${((dashboardStats.topRatedCar.reliabilityAvg || 4.8) / 5) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[9px] leading-none">
+                              <span className="text-zinc-500">Gas Efficiency:</span>
+                              <span className="text-purple-400 font-bold">{dashboardStats.topRatedCar.gasAvg?.toFixed(1) || "4.2"} ★</span>
+                            </div>
+                            <div className="h-1 w-full bg-slate-900 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-purple-500 rounded-full transition-all duration-500" 
+                                style={{ width: `${((dashboardStats.topRatedCar.gasAvg || 4.2) / 5) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Actions to inspect model */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-[8.5px] text-zinc-500 uppercase leading-none">
+                          Based on {dashboardStats.topRatedCar.ratingCount} reviews
+                        </span>
+                        <button
+                          onClick={() => {
+                            setSelectedGarageCar(dashboardStats.topRatedCar);
+                            setActiveTab('garage');
+                          }}
+                          className={`px-3 py-1.5 ${activeTheme.accentBg} ${activeTheme.accentHover} text-slate-950 font-bold text-[9px] rounded-lg tracking-wider transition uppercase cursor-pointer flex items-center gap-1`}
+                        >
+                          <span>Inspect Model Spec Sheet</span>
+                          <ChevronRight className="h-3 w-3 text-black font-black" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
 
 
               {/* Call to action scanning block */}
@@ -3563,7 +3705,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
                   </div>
 
                   {/* Interactive Module: Spotlight TOP RATED COMMUNITY VEHICLE (Landing Page Only) */}
-                  {dashboardStats && dashboardStats.topRatedCar && (
+                  {!currentUser && dashboardStats && dashboardStats.topRatedCar && (
                     <div className="space-y-2 pt-2">
                       <div className="flex items-center gap-1.5 px-0.5">
                         <Sparkles className="h-3.5 w-3.5 text-yellow-450 shrink-0" />
@@ -5231,6 +5373,57 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
                           )}
                         </div>
                       </div>
+
+                      {/* Scan / Computer Vision Error Logs Panel */}
+                      {adminDbStats?.scanErrors && adminDbStats.scanErrors.length > 0 && (
+                        <div className="space-y-4 pt-3.5 border-t border-slate-900 animate-fade-in text-left">
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-[10px] font-bold text-amber-500 uppercase font-mono tracking-wider flex items-center gap-1.5 animate-pulse">
+                              🔍 Neural Vision Scan & Computer Vision Errors ({adminDbStats.scanErrors.length})
+                            </h5>
+                            <span className="text-[8px] font-mono text-zinc-500 uppercase">Captured Live Logs</span>
+                          </div>
+                          
+                          <div className="max-h-56 overflow-y-auto space-y-1.5 border border-amber-95/30 rounded-xl bg-slate-950 p-2.5">
+                            {adminDbStats.scanErrors.map((log: any, index: number) => (
+                              <details key={index} className="group bg-slate-900/30 rounded-lg border border-amber-950/20 overflow-hidden transition-all text-[9.5px]">
+                                <summary className="flex items-center justify-between p-2 cursor-pointer hover:bg-slate-900/70 select-none">
+                                  <div className="flex flex-col gap-0.5 text-left text-[9px]">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="bg-amber-950 text-amber-400 text-[8px] font-extrabold px-1 rounded uppercase tracking-wider">
+                                        {log.planTier ? log.planTier.toUpperCase() : "GUEST"}
+                                      </span>
+                                      <span className="text-zinc-300 font-bold uppercase font-mono">
+                                        {log.userEmail || "Anonymous Guest"}
+                                      </span>
+                                    </div>
+                                    <span className="text-zinc-500 text-[8px] font-mono">
+                                      {new Date(log.timestamp).toLocaleTimeString()} ({new Date(log.timestamp).toLocaleDateString()}) • Scans used: {log.sessionScansUsed ?? 0}
+                                    </span>
+                                  </div>
+                                  <span className="text-zinc-450 text-[10px] group-open:rotate-180 transform transition font-mono">▼</span>
+                                </summary>
+                                <div className="p-2.5 bg-black border-t border-slate-900 font-mono text-[8.5px] text-amber-500/90 select-all leading-normal text-left whitespace-pre-wrap max-h-48 overflow-auto">
+                                  <div className="text-zinc-300 font-sans text-[9px] font-medium border-b border-amber-950/40 pb-1 mb-1.5">
+                                    <strong className="text-amber-500">Error:</strong> {log.message}
+                                    {log.imageUrl && (
+                                      <div className="mt-1 text-[8px] text-zinc-400 truncate">
+                                        <strong>Image URL:</strong> {log.imageUrl}
+                                      </div>
+                                    )}
+                                    {log.imageSize && (
+                                      <div className="mt-0.5 text-[8px] text-zinc-400">
+                                        <strong>Base64 Size:</strong> {log.imageSize} characters
+                                      </div>
+                                    )}
+                                  </div>
+                                  <code>{log.stack || "No callstack tracing available."}</code>
+                                </div>
+                              </details>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Database Error Log Stack Tracing Panel */}
                       {adminDbStats?.errorLogs && adminDbStats.errorLogs.length > 0 && (

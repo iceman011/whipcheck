@@ -94,6 +94,47 @@ interface DatabaseErrorLog {
   apiQuery?: string;
 }
 
+interface ScanErrorLog {
+  timestamp: string;
+  userEmail: string;
+  userId: string;
+  planTier: string;
+  sessionScansUsed: number;
+  message: string;
+  stack?: string;
+  imageSize?: number;
+  imageUrl?: string;
+}
+
+function saveScanErrorToFile(logEntry: ScanErrorLog) {
+  try {
+    const filePath = path.join(ERROR_LOGS_DIR, "scan_errors.json");
+    let logs: ScanErrorLog[] = [];
+    if (fs.existsSync(filePath)) {
+      logs = JSON.parse(fs.readFileSync(filePath, "utf8")) || [];
+    }
+    logs.unshift(logEntry);
+    if (logs.length > 100) {
+      logs = logs.slice(0, 100);
+    }
+    fs.writeFileSync(filePath, JSON.stringify(logs, null, 2), "utf8");
+  } catch (err) {
+    console.warn("Failed to save scan error trace to file:", err);
+  }
+}
+
+function getScanErrorsFromFile(): ScanErrorLog[] {
+  try {
+    const filePath = path.join(ERROR_LOGS_DIR, "scan_errors.json");
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, "utf8")) || [];
+    }
+  } catch (err) {
+    console.warn("Failed to read scan error traces from file:", err);
+  }
+  return [];
+}
+
 function saveErrorTraceToFile(logEntry: DatabaseErrorLog) {
   try {
     const filePath = path.join(ERROR_LOGS_DIR, "database_errors.json");
@@ -1099,8 +1140,8 @@ app.delete("/api/user/vehicles/:userId/:vehicleId", async (req, res) => {
 
 // Identify car from base64 image using Gemini
 app.post("/api/identify-car", async (req, res) => {
+  const { image, imageUrl, userContext } = req.body;
   try {
-    const { image, imageUrl } = req.body;
     if (!image && !imageUrl) {
       res.status(400).json({ error: "Missing image or imageUrl data" });
       return;
@@ -1239,8 +1280,25 @@ If the image does not seem to contain or represent an automobile, please set "is
     res.json(data);
   } catch (error: any) {
     console.error("Error analyzing car image:", error);
+    const email = userContext?.email || "Guest";
+    const id = userContext?.id || "guest-session";
+    const planTier = userContext?.planTier || "chiptuning";
+    const sessionScansUsed = userContext?.sessionScansUsed || 0;
+    
+    saveScanErrorToFile({
+      timestamp: new Date().toISOString(),
+      userEmail: email,
+      userId: id,
+      planTier: planTier,
+      sessionScansUsed: sessionScansUsed,
+      message: error.message || String(error),
+      stack: error.stack || String(error),
+      imageSize: image ? String(image).length : undefined,
+      imageUrl: imageUrl || undefined
+    });
+
     res.status(500).json({ 
-      error: error.message || "An error occurred during car image identification." 
+      error: "We encountered a temporary hiccup analyzing your vehicle chassis. Please ensure you are uploading a clear car image and try again." 
     });
   }
 });
@@ -1693,6 +1751,7 @@ app.get("/api/admin/database-stats", async (req, res) => {
       rawVehicles: rawVehiclesGrouped,
       rawComments: rawCommentsGrouped,
       errorLogs: getErrorTracesFromFile(),
+      scanErrors: getScanErrorsFromFile(),
       statsErrors: statsErrors.length > 0 ? statsErrors : undefined
     });
   } catch (err: any) {
