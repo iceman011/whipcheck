@@ -1315,6 +1315,9 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (!user) return;
     try {
       setIsSupabaseSyncing(true);
+      // Synchronize custom user subscription tiers & scan properties
+      syncUserProfileParameters(user.id);
+      
       const cloudCars = await fetchSupabaseGarage(user.id);
       
       let localCars: IdentifiedCar[] = [];
@@ -1589,7 +1592,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
+        setAuthMessage("🔒 Guest users are allowed only 1 free scan. Please register or sign in to continue scanning and save cars!");
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
@@ -1642,7 +1645,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
+        setAuthMessage("🔒 Guest users are allowed only 1 free scan. Please register or sign in to continue scanning and save cars!");
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
@@ -1684,8 +1687,8 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
   };
 
   const checkScanLimitReached = () => {
-    // Guest user constraints: allow guest user to scan up to 3 times in current session (matching Chiptuning Free tier)
-    if (!currentUser && sessionScansUsed >= 3) {
+    // Guest user constraints: allow guest user to scan exactly 1 time in current session
+    if (!currentUser && sessionScansUsed >= 1) {
       return true;
     }
     if (selectedPlanTier === 'chiptuning' && (sessionScansUsed >= 3 || garage.length >= 3)) {
@@ -1702,7 +1705,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
+        setAuthMessage("🔒 Guest users are allowed only 1 free scan. Please register or sign in to continue scanning and save cars!");
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
@@ -1718,12 +1721,12 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
     if (checkScanLimitReached()) {
       if (!currentUser) {
         setActiveTab('account');
-        setAuthMessage("🔒 Guest users are allowed only 3 scans in current session. Please register or sign in to save cars and unlock more scans!");
+        setAuthMessage("🔒 Guest users are allowed only 1 free scan. Please register or sign in to continue scanning and save cars!");
         setScanStep('idle');
         return;
       }
       handleOpenPlans(selectedPlanTier === 'chiptuning' ? 'teen_passion' : 'gasoline_gold');
-      setAuthMessage(`🚫 Scan limit of ${selectedPlanTier === 'chiptuning' ? '3' : '15'} scans reached for your current plan! Upgrade to unlock unlimited scans.`);
+      setAuthMessage(`🚫 Scan limit of ${selectedPlanTier === 'chiptuning' ? '3' : '15'} scans reached for your current plan! Upgrade to unlock unlock unlimited scans.`);
       setScanStep('idle');
       return;
     }
@@ -2416,10 +2419,16 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
             setSelectedPlanTier(profile.plan_tier);
             localStorage.setItem("whipcheck_subscription_tier", profile.plan_tier);
           }
-          if (typeof profile.scans_count_used === "number") {
-            setScansCountUsed(profile.scans_count_used);
-            localStorage.setItem("whipcheck_scan_use_count", String(profile.scans_count_used));
+          
+          let dbScans = typeof profile.scans_count_used === "number" ? profile.scans_count_used : 0;
+          if (sessionScansUsed > 0) {
+            dbScans += sessionScansUsed;
+            // Upload the merged scan count to server
+            uploadUserProfileUpdates({ scans_count_used: dbScans });
           }
+          setScansCountUsed(dbScans);
+          localStorage.setItem("whipcheck_scan_use_count", String(dbScans));
+
           if (profile.compare_list) {
             try {
               const list = typeof profile.compare_list === "string" ? JSON.parse(profile.compare_list) : profile.compare_list;
@@ -2434,6 +2443,7 @@ CREATE POLICY "Allow public access to whipcheck_identify_cache"
             try {
               const parsedSession = JSON.parse(sessionStr);
               Object.assign(parsedSession, profile);
+              parsedSession.scans_count_used = dbScans;
               localStorage.setItem("whipcheck_user_session", JSON.stringify(parsedSession));
             } catch (e) {}
           }
